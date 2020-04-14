@@ -1,0 +1,2924 @@
+---
+title: "FP006 Extended Filtration Time - Continuous Parameters EDA"
+author: "Created by: Alexis Roldan"
+date: "Updated On: `r format(Sys.Date(),'%d%b%y')`"
+always_allow_html: yes
+output:
+  rmdformats::readthedown:
+    highlight: kate
+  html_document: 
+    fig_height: 6.5
+    fig_width: 9
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+<!-- To set up all chunks to cache = true as default -->
+```{r setup, include=FALSE}
+library(knitr)
+library(rgl)
+knit_hooks$set(webgl = hook_webgl)
+knitr::opts_chunk$set(cache=FALSE, message = FALSE, warning = FALSE,
+                      fig.align = "center")
+
+```
+
+
+<!-- Ctr+Shift+C for comments, need to highlight the lines of code -->
+
+```{css style-customizations,echo=FALSE}
+h1.title {
+  font-size: 33px;
+  color: Navy;
+  font-family:"Roboto"
+}
+
+h1 {
+  font-size: 27px;
+  color: blue;
+  font-family:"Helvetica"
+  
+}
+h2 {
+  font-size: 24px;
+  color: brown;
+  font-family:"Helvetica"
+}
+
+h3 {
+  font-size: 21px;
+  color: Navy;
+  font-family:"Helvetica"
+}
+
+h4 {
+  font-size: 18px;
+  color: black;
+  font-family:"Helvetica"
+}
+```
+
+
+**Before we begin please note anything bolded is either a finding or an important comment**
+
+
+# FP006 Extended Filtration Time - Business Understanding
+
+During __"Fractionation Tier 2 Meeting"__, the manufacturing team reported an unusual cycle time increase during __"FP006 Filtration"__.
+
+Based on that statement, a __rapid response team__ was assembled to investigate and analyze possible factors causing this filtration time variation.
+
+
+# FP006 Extended Filtration Time - Data Understanding
+
+After having an understanding on what is our business problem, __initial datasets containing continuous data for different parameters__ will be loaded for data preparation and exploration prior being added into main dataset.
+
+
+## Libraries & Functions
+
+Let's begin by loading the libraries and functions that will be used for this analysis:
+
+```{r Libraries, echo=FALSE}
+
+load.libraries <- c('plyr', 'dplyr','data.table', 'readxl',
+                    'stringr', 'stringi','forecast',
+                    'tidyverse','matrixStats','lubridate','e1071','xgboost',
+                    'caret','zoo','plotly','DT','rpart','tidyr','inspectdf','DataExplorer',
+                    'gridExtra','changepoint','ggfortify','magrittr','ggpmisc','prophet',
+                    'ggplot2','tsoutliers','dlm','reshape2','AppliedPredictiveModeling',
+                    'PerformanceAnalytics','NbClust','fpc','flexclust',
+                    'ggdendro','rgdal','tsibble')
+
+install.lib <- load.libraries[!load.libraries %in% installed.packages()]
+for(libs in install.lib) install.packages(libs, dependences = TRUE)
+sapply(load.libraries, require, character = TRUE)
+
+library("corrplot")
+library("Hmisc")
+library("RColorBrewer")
+library("dendextend")
+library("feasts")
+library("factoextra")
+
+#Loading all the plotting functions
+plotHist <- function(data_in, i) {
+  data <- data.frame(x=data_in[[i]])
+  p <- ggplot(data=data, aes(x=x)) + geom_histogram(bins=100, fill="#0072B2", alpha = .9) + xlab(colnames(data_in)[i]) + theme_light() + 
+    theme(axis.text.x = element_text(angle = 90, hjust =1))
+  return (p)
+}
+
+plotCorr <- function(data_in, list1,list2,i){
+  data <- data.frame(x = data_in[[list1[i]]], y = data_in[[list2[i]]])
+  p <- ggplot(data, aes(x = x, y = y)) + geom_smooth(method = lm ) + geom_point(aes(x = x, y = y)) +
+  geom_jitter(width = 0.1, height = 0.1)  + xlab(paste0(list1[i], '\n', 'R-Squared: ', 
+                                                        round(cor(data_in[[list1[i]]], 
+                                                                  data_in[[list2[i]]], use = 'pairwise.complete.obs'), 3))) + 
+    theme_light() + ylab(paste0(list2[i]))
+  return(suppressWarnings(p))
+}
+
+doPlotsCorr <- function(data_in, fun, list1,list2,ii, ncol=3) {
+  pp <- list()
+  for (i in ii) {
+    p <- fun(data_in=data_in, list1,list2,i=i)
+    pp <- c(pp, list(p))
+  }
+  do.call("grid.arrange", c(pp, ncol=ncol))
+}
+
+doPlots <- function(data_in, fun, ii, ncol=3) {
+  pp <- list()
+  for (i in ii) {
+    p <- fun(data_in=data_in, i=i)
+    pp <- c(pp, list(p))
+  }
+  do.call("grid.arrange", c(pp, ncol=ncol))
+}
+
+```
+
+
+## Data Collection
+
+Raw data for each continuous parameter are loaded. 
+
+For time analysis, I will use only start times from _"Out Turbidity"_ dataset: 
+
+<!-- ALt+Ctrl+I is the shorcut to insert R code -->
+```{r read Pooling Loss Data}
+
+#load raw data
+load("rda/FP006_Out_Turbidity.rda")
+load("rda/FP006_DP_Control.rda")
+load("rda/FP006_Feed_Pump_P050.rda")
+load("rda/FP006_Flow_Control.rda")
+load("rda/FP006_Inlet_Pressure.rda")
+load("rda/FP006_Filtrate_Pressure.rda")
+load("rda/FP006_Outlet_Temperature.rda")
+load("rda/FP006_Inlet_Temperature.rda")
+load("rda/FP006_Product_FP_Pressure.rda")
+
+## Filter data by source
+FP006_Out_Turbidity_Source <- FP006_Out_Turbidity %>% 
+  filter(FP006_Out_Turbidity$Plasma_Type == "Bioscience")
+
+## Filter data by recovery
+FP006_Out_Turbidity_Recovery <- FP006_Out_Turbidity %>% 
+  filter(FP006_Out_Turbidity$Plasma_Type == "Recovery")
+
+```
+
+**Data Summary**
+
+The 1st dataset (FP006_Out_Turbidity) has `r dim(FP006_Out_Turbidity)[1]` rows and `r dim(FP006_Out_Turbidity)[2]` columns  
+The 2nd dataset (FP006_DP_Control) has `r dim(FP006_DP_Control)[1]` rows and `r dim(FP006_DP_Control)[2]` columns  
+The 3rd dataset (FP006_Feed_Pump_P050) has `r dim(FP006_Feed_Pump_P050)[1]` rows and `r dim(FP006_Feed_Pump_P050)[2]` columns  
+The 4th dataset (FP006_Flow_Control) has `r dim(FP006_Flow_Control)[1]` rows and `r dim(FP006_Flow_Control)[2]` columns  
+The 5th dataset (FP006_Inlet_Pressure) has `r dim(FP006_Inlet_Pressure)[1]` rows and `r dim(FP006_Inlet_Pressure)[2]` columns  
+The 6th dataset (FP006_Filtrate_Pressure) has `r dim(FP006_Filtrate_Pressure)[1]` rows and `r dim(FP006_Filtrate_Pressure)[2]` columns  
+The 7th dataset (FP006_Outlet_Temperature) has `r dim(FP006_Outlet_Temperature)[1]` rows and `r dim(FP006_Outlet_Temperature)[2]` columns  
+The 8th dataset (FP006_Inlet_Temperature) has `r dim(FP006_Inlet_Temperature)[1]` rows and `r dim(FP006_Inlet_Temperature)[2]` columns  
+The 9th dataset (FP006_Product_FP_Pressure) has `r dim(FP006_Product_FP_Pressure)[1]` rows and `r dim(FP006_Product_FP_Pressure)[2]` columns  
+
+## Exploratory Data Analysis (EDA)
+
+After raw data for each continuous parameters are loaded, I proceed to perform EDA on each continuous dataset.
+
+### Data Cleaning
+
+At this step, there's no need to evaluate each dataset for missing data due that each dataset is based on continuous parameter with an interval of 2 minutes per reading; therefore, it's bound to have missing data due that filtration time is different per lot number.
+
+
+### Time-series Analysis {.tabset .tabset-fade .tabset-pills}
+
+For this analysis, I will visualize _FP006 Cycle Time Performance_ over time per plasma flavour:
+
+```{r Time Series, echo=FALSE}
+
+# Create a ts object for Source
+Source.value.ts <- ts(FP006_Out_Turbidity_Source$Total_Rec_Filt_min, 
+                      frequency = 1)
+#plot(Source.value.ts)
+
+# Create a ts object for Recovery
+Recovery.value.ts <- ts(FP006_Out_Turbidity_Recovery$Total_Rec_Filt_min,
+                      frequency = 1)
+
+
+mvalue.s <- cpt.mean(Source.value.ts, 
+                  method = "BinSeg")
+#cpts(mvalue.s)
+
+mvalue.r <- cpt.mean(Recovery.value.ts, 
+                   method = "BinSeg")
+#cpts(mvalue.r)
+```
+
+#### Source Lots
+
+I proceed to visualize __Time series analysis__ for _Extract Filtration Source Lots_:
+
+**Change in Mean**
+
+Here I perform a *mean changepoint analysis* to identify significant changes in time series:
+
+```{r Bioscience Lots 1, dev='png',  echo=FALSE}
+
+plot(mvalue.s, pt.width=10, cpt.col='blue' , 
+     xlab='Lots', ylab='Minutes', main = "FP006 Source Lots Changepoint Analysis (Jan19 - Feb20)
+     Changes in Mean (BinSeg)",
+          col = "brown")
+legend("topleft", legend = c("Actual", "Mean"),
+       bty = "n",
+       col=c("brown", "blue"), lwd = 1, cex=0.8)
+
+mvalue.s
+
+
+print("Mean Changepoints Start Lot & Date/Time:")
+# DT::datatable(rbind(FP006_Out_Turbidity_Source[1,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Source[32,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Source[214,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Source[381,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Source[428,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Source[458,c(1,2,5,3)]))
+
+knitr::kable(rbind(FP006_Out_Turbidity_Source[1,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Source[32,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Source[214,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Source[381,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Source[428,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Source[458,c(1,2,5,3)]))
+
+```
+
+**Breakpoint, Smoothed & Spectral Analysis**
+
+After changes have been identified in time series analysis above, I proceed to perform *breakdown, smoothed & spectral density analysis* to help understand time series behaviour:
+
+```{r Bioscience Lots 2, dev='png', echo=FALSE}
+
+# Identify change points in mean and variance on Source
+p1 <- Source.value.ts %>%
+  cpt.mean(method = "BinSeg") %>%  # Identify change points
+  autoplot(pt.width=10, cpt.col='blue', col="brown",
+           xlab="Lots", ylab = "Minutes", main = "FP006 Source Lots - Change in Mean",
+           cpt.linetype = 6) + 
+  theme_classic()
+
+# Detect jump in a data
+p2 <- strucchange::breakpoints(Source.value.ts ~ 1) %>%
+  autoplot(pt.width=10, cpt.col='blue', col="brown",
+           xlab="Lots", ylab = "Minutes", main = "FP006 Source Lots - Change in Breakpoints",
+           cpt.linetype = 6) + 
+  theme_classic()
+
+# Create a smooth time series for source timeseries
+form <- function(theta){
+  dlmModPoly(order = 1, dV = exp(theta[1]), dW = exp(theta[2]))
+}
+
+source_model <- form(dlmMLE(Source.value.ts, parm = c(1, 1), form)$par)
+source_filtered <- dlmFilter(Source.value.ts, source_model)
+p3 <- autoplot(source_filtered, ts.linetype = 'dashed', fitted.colour = 'blue') +
+  labs(title = "FP006 Source Lots - Smoothed VS Actual") +
+  xlab("Lots") + ylab("Minutes") +
+  theme_classic()
+
+# Create spectral density analysis for source lots
+p4 <- autoplot(spec.ar(Source.value.ts, plot = FALSE)) + 
+  theme_classic() + 
+  labs(title = "FP006 Source Lots - Spectral Density Analysis")
+
+grid.arrange(p1, p2, p3, p4, nrow = 2)
+
+```
+
+**Trend, Seasonality & ARIMA Model**
+
+Here I first display scatter lag plots for *FP006 Time Series Performance*, where the horizontal axis shows lagged values of the time series. 
+
+Each graph shows $y_{t}$ plotted against $y_{t-k}$ for different values of $k$.
+
+```{r Bioscience Lots 3, dev='png', echo=FALSE}
+
+FP006_Filt_Forecast_Source_ts <- data.frame(FP006_Out_Turbidity_Source[,c(5)],
+                                            FP006_Out_Turbidity_Source[,c(3)],
+                                         FP006_Out_Turbidity_Source[,c(7)])
+
+
+FP006_Filt_Forecast_Source_ts <- FP006_Filt_Forecast_Source_ts %>%
+  as_tsibble()
+
+FP006_Filt_Forecast_Source_ts %>% 
+  gg_lag(Total_Rec_Filt_min, geom="point",
+         col = "navy") 
+
+```
+
+Additionally, __Decomposition Analysis__ is performed to determine trend or seasonality. 
+
+_Autocorrelation & Partial Autocorrelation Analysis_ are performed to measure the linear relationship between lagged values of this time series.
+
+The value for each *autocorrelation coefficient* $r_{k}$ can be expressed as:
+
+$r_{k} = \frac{\sum\limits_{t=k+1}^T (y_{t}-\bar{y})(y_{t-k}-\bar{y})} {\sum\limits_{t=1}^T (y_{t}-\bar{y})^2}$
+
+where $T$ is the length of the time series:
+
+```{r Bioscience Lots 4, dev='png',  echo=FALSE}
+
+ggtsdisplay(Source.value.ts, 
+            plot.type = "partial",
+            main = "ACF & PACF plot for `Extract Filtration' Time-Series (Source)",
+            smooth = TRUE,
+            theme = theme_classic())
+
+# autoplot(acf(Source.value.ts, plot = FALSE), 
+#          conf.int.fill = '#0000FF', conf.int.value = 0.9, conf.int.type = 'ma',
+#          main = "FP006 Source Lots Performance Correlogram") + theme_classic()
+# 
+# autoplot(pacf(Source.value.ts, plot = FALSE), 
+#          conf.int.fill = '#0000FF', conf.int.value = 0.8, conf.int.type = 'ma',
+#          main = "FP006 Source Lots Performance Partial Auto-Correlogram") + theme_classic()
+
+
+```
+
+Based on *autocorrelation and partial autocorrelation plots*, we observe a possible trend within time-series. 
+
+When there's trend, autocorrelations for small lags tend to be large and positive because observations nearby in time are also nearby in size. We observe that the ACF for this trended time series tend to have positive values that slowly decrease as the lags increase. PACF chart shows a lag of 2 (p).
+
+Now I proceed to transform time-series into *stationary series* by taking difference of series and remove unequal variances:
+
+```{r Bioscience Lots 5, dev='png',  echo=FALSE}
+
+source.diff.series <- diff(log(Source.value.ts), lag=frequency(Source.value.ts))
+
+ggtsdisplay(source.diff.series, 
+            plot.type = "partial",
+            main = "ACF & PACF plot for `Extract Filtration' Time-Series (Source) (diff(log()))",
+            smooth = TRUE,
+            theme = theme_classic())
+
+print("We now test the transformed series:")
+tseries::adf.test(source.diff.series, 
+                  alternative="stationary", k=0)
+
+print("Now I proceed to create an ARIMA model (model with lowest AIC below):")
+
+auto.arima(source.diff.series)
+
+```
+
+**Plot Time Series Diagnostics**
+
+Here I proceed to evaluate *ARIMA* model created by plotting residuals. As we can see from *Ljung-Box test* results below, *p-value > 0.05*, therefore, we observe that there's not enough statistical evidence to reject the null hypothesis. In other words, we cannot assume that residual values are dependent which favors ARIMA model:
+
+```{r Bioscience Lots 6, dev='png',  echo=FALSE}
+
+# ggtsdiag(auto.arima(Source.value.ts)) + theme_bw()
+
+checkresiduals(auto.arima(source.diff.series),
+               theme = theme_classic())
+
+# Outliers Source lots
+data.ts.outliers <- tso(Source.value.ts)
+
+```
+
+**Outlier Analysis**
+
+Here I proceed to point the `r data.ts.outliers$cval` outliers found during ARIMA model and plot effect of outliers in trend.
+
+```{r Bioscience Lots 7, dev='png', echo=FALSE}
+
+data.ts.outliers
+plot(data.ts.outliers)
+
+```
+
+
+#### Recovery Lots
+
+Here I proceed to visualize __Time series analysis__ for _Extract Filtration Recovery Lots_:
+
+**Change in Mean**
+
+Here I perform a *mean changepoint analysis* to identify significant changes in time series:
+
+```{r Recovery Lots 1, dev='png', echo=FALSE}
+
+plot(mvalue.r, pt.width=10, cpt.col='blue' , 
+     xlab='Lots', ylab='Minutes', main = "FP006 Recovery Lots Changepoint Analysis (Jan19 - Feb20)
+     Changes in Mean (BinSeg)",
+          col = "brown")
+legend("topleft", legend = c("Actual", "Mean"),
+       bty = "n",
+       col=c("brown", "blue"), lwd = 1, cex=0.8)
+
+mvalue.r
+
+print("Mean Changepoints Start Lot & Date/Time:")
+# DT::datatable(rbind(FP006_Out_Turbidity_Recovery[1,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Recovery[113,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Recovery[123,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Recovery[145,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Recovery[151,c(1,2,5,3)],
+#                     FP006_Out_Turbidity_Recovery[152,c(1,2,5,3)]))
+
+knitr::kable(rbind(FP006_Out_Turbidity_Recovery[1,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Recovery[113,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Recovery[123,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Recovery[145,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Recovery[151,c(1,2,5,3)],
+                    FP006_Out_Turbidity_Recovery[152,c(1,2,5,3)]))
+
+```
+
+**Breakpoint, Smoothed & Spectral Analysis**
+
+After changes have been identified in time series analysis above, I proceed to perform *breakdown, smoothed & spectral density analysis* to help understand time series behaviour:
+
+```{r Recovery Lots 2, dev='png', fig.height = 7, fig.width = 10, echo=FALSE}
+
+# Identify change points in mean and variance on Recovery
+p5 <- Recovery.value.ts %>%
+  cpt.mean(method = "BinSeg") %>%  # Identify change points
+  autoplot(pt.width=10, cpt.col='blue', col="black",
+           xlab="Lots", ylab = "Minutes",  main = "FP006 Recovery Lots - Change in Mean",
+           cpt.linetype = 6) + 
+  theme_classic()
+
+# Detect jump in a data
+p6 <- strucchange::breakpoints(Recovery.value.ts ~ 1) %>%
+  autoplot(pt.width=10, cpt.col='blue', col="black",
+           xlab="Lots", ylab = "Minutes", main = "FP006 Recovery Lots - Change in Breakpoints",
+           cpt.linetype = 6) + 
+  theme_classic()
+
+# Create smooth for Recovery
+recovery_model <- form(dlmMLE(Recovery.value.ts, parm = c(1, 1), form)$par)
+recovery_filtered <- dlmFilter(Recovery.value.ts, recovery_model)
+
+p7 <- autoplot(recovery_filtered, ts.linetype = 'dashed', fitted.colour = 'blue') +
+  labs(title = "FP006 Recovery Lots - Smoothed VS Actual") +
+  xlab("Lots") + ylab("Minutes") +
+  theme_classic()
+
+# Create spectral density analysis for source lots
+p8 <- autoplot(spec.ar(Recovery.value.ts, plot = FALSE)) + 
+  labs(title = "FP006 Recovery Lots - Spectral Density Analysis") +
+  theme_classic()
+
+grid.arrange(p5, p6, p7, p8, nrow = 2)
+
+```
+
+**Trend, Seasonality & ARIMA Model**
+
+Here I display scatterplots of *FP006 Time Series Performance*, where the horizontal axis shows lagged values of the time series. 
+
+Each graph shows $y_{t}$ plotted against $y_{t-k}$ for different values of $k$.
+
+
+```{r Recovery Lots 3, dev='png',  echo=FALSE}
+
+FP006_Filt_Forecast_Recovery_ts <- data.frame(FP006_Out_Turbidity_Recovery[,c(5)],
+                                              FP006_Out_Turbidity_Recovery[,c(3)],
+                                              FP006_Out_Turbidity_Recovery[,c(7)])
+
+
+FP006_Filt_Forecast_Recovery_ts <- FP006_Filt_Forecast_Recovery_ts %>%
+  as_tsibble()
+
+FP006_Filt_Forecast_Recovery_ts %>% 
+  gg_lag(Total_Rec_Filt_min, geom="point",
+         col = "brown") 
+
+```
+
+Additionally, __Decomposition Analysis__ is performed to determine trend or seasonality. 
+
+_Autocorrelation & Partial Autocorrelation Analysis_ are performed to measure the linear relationship between lagged values of this time series.
+
+The value for each *autocorrelation coefficient* $r_{k}$ can be expressed as:
+
+$r_{k} = \frac{\sum\limits_{t=k+1}^T (y_{t}-\bar{y})(y_{t-k}-\bar{y})} {\sum\limits_{t=1}^T (y_{t}-\bar{y})^2}$
+
+where $T$ is the length of the time series:
+
+```{r Recovery Lots 4, dev='png', out.width="115%", echo=FALSE}
+
+ggtsdisplay(Recovery.value.ts, 
+            plot.type = "partial",
+            main = "ACF & PACF plot for `Extract Filtration' Time-Series (Recovery)",
+            smooth = TRUE,
+            theme = theme_classic())
+
+# 
+# autoplot(acf(Recovery.value.ts, plot = FALSE), 
+#          conf.int.fill = '#0000FF', conf.int.value = 0.8, conf.int.type = 'ma',
+#          main = "FP006 Recovery Lots Performance Correlogram") + theme_classic()
+
+
+```
+
+Based on *autocorrelation and partial autocorrelation plots*, we observe a possible trend within time-series. 
+
+When there's trend, autocorrelations for small lags tend to be large and positive because observations nearby in time are also nearby in size. We observe that the ACF for this trended time series tend to have positive values that slowly decrease as the lags increase. PACF chart shows a lag of 5 (p).
+
+Now I proceed to transform time-series into *stationary series* by taking difference of series:
+
+```{r Recovery Lots 5, dev='png',  echo=FALSE}
+
+recovery.diff.series <- diff(Recovery.value.ts, lag=frequency(Recovery.value.ts))
+
+ggtsdisplay(recovery.diff.series, 
+            plot.type = "partial",
+            main = "ACF & PACF plot for `Extract Filtration' Time-Series (Recovery) (diff(log()))",
+            smooth = TRUE,
+            theme = theme_classic())
+
+print("We now test the transformed series:")
+tseries::adf.test(recovery.diff.series, 
+                  alternative="stationary", k=0)
+
+print("Now I proceed to create an ARIMA model (model with lowest AIC below):")
+
+auto.arima(recovery.diff.series)
+
+```
+
+**Plot Time Series Diagnostics**
+
+Here I proceed to evaluate *ARIMA* model created by plotting residuals. As we can see from *Ljung-Box test* results below, *p-value < 0.05*, therefore, we observe that there's evidence to reject the null hypothesis assuming a 5% chance of making a mistake. In other words, we assume that residual values dependence on each other which unfavor ARIMA model.
+
+```{r Recovery Lots 6, dev='png',  echo=FALSE, fig.height=7.5, fig.width=9}
+
+# ggtsdiag(auto.arima(Recovery.value.ts)) + theme_bw()
+
+checkresiduals(auto.arima(recovery.diff.series),
+               theme = theme_classic())
+
+# Outliers Recovery lots
+datarecovery.ts.outliers <- tso(Recovery.value.ts)
+
+```
+
+**Outlier Analysis**
+
+Here I proceed to point the `r datarecovery.ts.outliers$cval` outliers found during ARIMA model and plot effect of outliers in trend.
+
+```{r Recovery Lots 7, dev='png', echo=FALSE}
+
+datarecovery.ts.outliers
+plot(datarecovery.ts.outliers)
+
+```
+
+### Forecast
+
+This analysis will create a _FP006 filtration cycle time_ forecast for the next 45 days:
+
+```{r Forecast, dev='png', echo=FALSE, out.width="105%"}
+
+# Create dataset
+FP006_Filt_Forecast_Source <- data.frame(FP006_Out_Turbidity_Source[,c(5)],
+                               FP006_Out_Turbidity_Source[,c(7)])
+
+names(FP006_Filt_Forecast_Source)[1] <- "ds"
+names(FP006_Filt_Forecast_Source)[2] <- "y"
+
+# Create Forecast
+FP006ForecastSource <- prophet(FP006_Filt_Forecast_Source)
+future_FP006_Source <- make_future_dataframe(FP006ForecastSource, periods = 45)
+#tail(future_FP006_Source)
+
+Forecast_FP006_Source <- predict(FP006ForecastSource, future_FP006_Source)
+#tail(Forecast_FP006_Source[c('ds', 'yhat', 'yhat_lower', 'yhat_upper')])
+
+# Plot Forecast
+# plot(FP006ForecastSource, Forecast_FP006_Source) + 
+#   labs(title = "FP006 Source Filtration Forecast") + 
+#   xlab("Date") + ylab("Minutes") +
+#   theme_classic()
+
+dyplot.prophet(FP006ForecastSource, Forecast_FP006_Source,
+               main = "FP006 Source Filtration Forecast")
+
+```
+
+Please see below for __FP006 Time Analysis Component Breakdown & Plot Prediction__:
+
+```{r Forecast Breakdown, dev='png', echo=FALSE}
+
+prophet_plot_components(FP006ForecastSource, Forecast_FP006_Source)
+
+# Model Performance
+# get prediction only for the amount of original datapoints
+pred_FP006_source <- Forecast_FP006_Source$yhat[1:472]
+actual_FP006_source <- FP006ForecastSource$history$y
+
+# Plot Prediction
+plot(actual_FP006_source, pred_FP006_source, 
+     main = "FP006 Source Filtration Actual vs Predicted",
+     xlab = "Actual (min)", ylab = "Predicted (min)", col = c("blue", "brown"))
+abline(lm(pred_FP006_source~actual_FP006_source), col = 'red')
+legend("topleft", legend = c("Actual", "Predicted"),
+       bty = "n",
+       col=c("blue", "brown"), pch = 1, cex=0.8)
+
+# Cross validation
+#x_FP006_source <- cross_validation(FP006ForecastSource, 90, units = 'days')
+#performance_metrics(x_FP006_source, rolling_window = 0.1)
+
+#plot_cross_validation_metric(x_FP006_source, metric = 'rmse',
+#                             rolling_window = 0.1) +
+#  labs(title = "FP006 Source Filtration - Performance VS Forecast (Cross Validation)") +
+#  theme_classic()
+
+```
+
+As we can see above, component breakdown analysis show an upper-trend after **April 2019** and from **Sunday to Monday and Thursday to Friday**.
+
+
+### Analytics 
+
+```{r Feature Exploration, dev='png', echo=FALSE}
+
+## Filter data by source and changes
+FP006_Out_Turbidity_Source <- FP006_Out_Turbidity %>% 
+  filter(FP006_Out_Turbidity$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_Out_Turbidity$Changes)>2)
+
+FP006_DP_Control_Source <- FP006_DP_Control %>% 
+  filter(FP006_DP_Control$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_DP_Control$Changes)>2)
+
+FP006_Feed_Pump_P050_Source <- FP006_Feed_Pump_P050 %>% 
+  filter(FP006_Feed_Pump_P050$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_Feed_Pump_P050$Changes)>2)
+
+FP006_Flow_Control_Source <- FP006_Flow_Control %>% 
+  filter(FP006_Flow_Control$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_Flow_Control$Changes)>2)
+
+FP006_Inlet_Pressure_Source <- FP006_Inlet_Pressure %>% 
+  filter(FP006_Inlet_Pressure$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_Inlet_Pressure$Changes)>2)
+
+FP006_Filtrate_Pressure_Source <- FP006_Filtrate_Pressure %>% 
+  filter(FP006_Filtrate_Pressure$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_Filtrate_Pressure$Changes)>2)
+
+FP006_Outlet_Temperature_Source <- FP006_Outlet_Temperature %>% 
+  filter(FP006_Outlet_Temperature$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_Outlet_Temperature$Changes)>2)
+
+FP006_Inlet_Temperature_Source <- FP006_Inlet_Temperature %>% 
+  filter(FP006_Inlet_Temperature$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_Inlet_Temperature$Changes)>2)
+
+FP006_Product_FP_Pressure_Source <- FP006_Product_FP_Pressure %>%
+  filter(FP006_Product_FP_Pressure$Plasma_Type == "Bioscience" &
+           as.numeric(FP006_Product_FP_Pressure$Changes)>2)
+
+## Reset the factors
+FP006_Out_Turbidity_Source$Changes <- as.numeric(FP006_Out_Turbidity_Source$Changes)
+FP006_Out_Turbidity_Source$Changes <- as.factor(FP006_Out_Turbidity_Source$Changes)
+
+FP006_DP_Control_Source$Changes <- as.numeric(FP006_DP_Control_Source$Changes)
+FP006_DP_Control_Source$Changes <- as.factor(FP006_DP_Control_Source$Changes)
+
+FP006_Feed_Pump_P050_Source$Changes <- as.numeric(FP006_Feed_Pump_P050_Source$Changes)
+FP006_Feed_Pump_P050_Source$Changes <- as.factor(FP006_Feed_Pump_P050_Source$Changes)
+
+FP006_Flow_Control_Source$Changes <- as.numeric(FP006_Flow_Control_Source$Changes)
+FP006_Flow_Control_Source$Changes <- as.factor(FP006_Flow_Control_Source$Changes)
+
+FP006_Inlet_Pressure_Source$Changes <- as.numeric(FP006_Inlet_Pressure_Source$Changes)
+FP006_Inlet_Pressure_Source$Changes <- as.factor(FP006_Inlet_Pressure_Source$Changes)
+
+FP006_Filtrate_Pressure_Source$Changes <- as.numeric(FP006_Filtrate_Pressure_Source$Changes)
+FP006_Filtrate_Pressure_Source$Changes <- as.factor(FP006_Filtrate_Pressure_Source$Changes)
+
+FP006_Outlet_Temperature_Source$Changes <- as.numeric(FP006_Outlet_Temperature_Source$Changes)
+FP006_Outlet_Temperature_Source$Changes <- as.factor(FP006_Outlet_Temperature_Source$Changes)
+
+FP006_Inlet_Temperature_Source$Changes <- as.numeric(FP006_Inlet_Temperature_Source$Changes)
+FP006_Inlet_Temperature_Source$Changes <- as.factor(FP006_Inlet_Temperature_Source$Changes)
+
+FP006_Product_FP_Pressure_Source$Changes <- as.numeric(FP006_Product_FP_Pressure_Source$Changes)
+FP006_Product_FP_Pressure_Source$Changes <- as.factor(FP006_Product_FP_Pressure_Source$Changes)
+
+# Reshape parameters
+FP6_Out_Turbidity_Melt <- melt(FP006_Out_Turbidity_Source[,-c(2,4:7)])
+FP6_DP_Control_Source_Melt <- melt(FP006_DP_Control_Source[,-c(2,4:7)])
+FP6_Feed_Pump_P050_Source_Melt <- melt(FP006_Feed_Pump_P050_Source[,-c(2,4:7)])
+FP6_Flow_Control_Source_Melt <- melt(FP006_Flow_Control_Source[,-c(2,4:7)])
+FP6_Inlet_Pressure_Source_Melt <- melt(FP006_Inlet_Pressure_Source[,-c(2,4:7)])
+FP6_Filtrate_Pressure_Melt <- melt(FP006_Filtrate_Pressure_Source[,-c(2,4:7)])
+FP6_Outlet_Temperature_Source_Melt <- melt(FP006_Outlet_Temperature_Source[,-c(2,4:7)])
+FP6_Inlet_Temperature_Source_Melt <- melt(FP006_Inlet_Temperature_Source[,-c(2,4:7)])
+FP6_Product_FP_Pressure_Source_Melt <- melt(FP006_Product_FP_Pressure_Source[,-c(2,4:7)])
+
+# Create the ggplot objects
+Out_Turbidity_Graph <- ggplot(FP6_Out_Turbidity_Melt, 
+                              aes(x=value, fill=as.factor(Changes)))
+
+DP_Control_Graph <- ggplot(FP6_DP_Control_Source_Melt, 
+                           aes(x=value, fill=as.factor(Changes)))
+
+Feed_Pump_P50_Graph <- ggplot(FP6_Feed_Pump_P050_Source_Melt, 
+                           aes(x=value, fill=as.factor(Changes)))
+
+Flow_Control_Graph <- ggplot(FP6_Flow_Control_Source_Melt, 
+                           aes(x=value, fill=as.factor(Changes)))
+
+Inlet_Pressure_Graph <- ggplot(FP6_Inlet_Pressure_Source_Melt, 
+                           aes(x=value, fill=as.factor(Changes)))
+
+Filtrate_Pressure_Graph <- ggplot(FP6_Filtrate_Pressure_Melt, 
+                           aes(x=value, fill=as.factor(Changes)))
+
+Outlet_Temperature_Graph <- ggplot(FP6_Outlet_Temperature_Source_Melt, 
+                           aes(x=value, fill=as.factor(Changes)))
+
+Inlet_Temperature_Graph <- ggplot(FP6_Inlet_Temperature_Source_Melt, 
+                           aes(x=value, fill=as.factor(Changes)))
+
+Product_FP_Pressure_Graph <- ggplot(FP6_Product_FP_Pressure_Source_Melt, 
+                           aes(x=value, fill=as.factor(Changes)))
+
+# function to calculate mode
+fun.mode<-function(x){as.numeric(names(sort(-table(x)))[1])}
+
+# Create ggplot2 graphs
+Histogram_Out_Turbidity <- Out_Turbidity_Graph +
+  geom_density(alpha=0.4) + theme_light() + 
+#  geom_vline(aes(xintercept= a),linetype="dashed") + 
+  scale_x_continuous(name = "ppm", limits = c(-0.2,2)) + 
+  scale_y_continuous(name = "Density") +  
+  guides(fill=guide_legend(title="Change in Mean")) +
+  geom_vline(aes(xintercept = mean(FP6_Out_Turbidity_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_Out_Turbidity_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_Out_Turbidity_Melt$value)),
+             col="orange",size=1) + 
+  ggtitle("FP006 Source Lots - Outlet Turbidity (ppm)")
+
+
+Violin_Out_Turbidity <- Out_Turbidity_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="ppm", limits = c(-0.2,2.5)) +
+  ggtitle("FP006 Source Lots - Outlet Turbidity (ppm)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+
+Histogram_DP_Control <- DP_Control_Graph + 
+  geom_density(alpha=0.4) + theme_light() + 
+  scale_x_continuous(name = "psid", limits = c(18,30)) + 
+  scale_y_continuous(name = "Density") + 
+  ggtitle("FP006 Source Lots - DP Control (psid)") + 
+  guides(fill=guide_legend(title="Change in Mean")) +
+  geom_vline(aes(xintercept = mean(FP6_DP_Control_Source_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_DP_Control_Source_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_DP_Control_Source_Melt$value)),
+             col="orange",size=1)
+
+Violin_DP_Control <- DP_Control_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="psid", limits = c(15,32)) +
+  ggtitle("FP006 Source Lots - DP Control (psid)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+
+Histogram_Feed_Pump_P50 <- Feed_Pump_P50_Graph + 
+  geom_density(alpha=0.4) + theme_light() + 
+  scale_x_continuous(name = "%") + 
+  scale_y_continuous(name = "Density") + 
+  ggtitle("FP006 Source Lots - Feed Pump P50 (%)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  geom_vline(aes(xintercept = mean(FP6_Feed_Pump_P050_Source_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_Feed_Pump_P050_Source_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_Feed_Pump_P050_Source_Melt$value)),
+             col="orange",size=1)
+
+Violin_Feed_Pump_P50 <- Feed_Pump_P50_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="%") +
+  ggtitle("FP006 Source Lots - Feed Pump (%)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+
+Histogram_Flow_Control <- Flow_Control_Graph + 
+  geom_density(alpha=0.4) + theme_light() + 
+  scale_x_continuous(name = "kg/min") + 
+  scale_y_continuous(name = "Density") + 
+  ggtitle("FP006 Source Lots - Flow Control (kg/min)") +
+  geom_vline(aes(xintercept = mean(FP6_Flow_Control_Source_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_Flow_Control_Source_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_Flow_Control_Source_Melt$value)),
+             col="orange",size=1) +
+  guides(fill=guide_legend(title="Change in Mean"))
+
+
+Violin_Flow_Control <- Flow_Control_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="kg/min") +
+  ggtitle("FP006 Source Lots - Flow Control (kg/min)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+
+Histogram_Inlet_Pressure <- Inlet_Pressure_Graph + 
+  geom_density(alpha=0.4) + theme_light() + 
+  scale_x_continuous(name = "psig") + 
+  scale_y_continuous(name = "Density") + 
+  ggtitle("FP006 Source Lots - Inlet Pressure (psig)") +
+  geom_vline(aes(xintercept = mean(FP6_Inlet_Pressure_Source_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_Inlet_Pressure_Source_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_Inlet_Pressure_Source_Melt$value)),
+             col="orange",size=1) +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+Violin_Inlet_Pressure <- Inlet_Pressure_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="psig") +
+  ggtitle("FP006 Source Lots - Inlet Pressure (psig)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+
+Histogram_Filtrate_Pressure <- Filtrate_Pressure_Graph + 
+  geom_density(alpha=0.4) + theme_light() + 
+  scale_x_continuous(name = "psig") + 
+  scale_y_continuous(name = "Density") + 
+  ggtitle("FP006 Source Lots - Filtrate Pressure (psig)") +
+  geom_vline(aes(xintercept = mean(FP6_Filtrate_Pressure_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_Filtrate_Pressure_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_Filtrate_Pressure_Melt$value)),
+             col="orange",size=1) +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+Violin_Filtrate_Pressure <- Filtrate_Pressure_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="psig") +
+  ggtitle("FP006 Source Lots - Filtrate Pressure (psig)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+
+Histogram_Outlet_Temperature <- Outlet_Temperature_Graph + 
+  geom_density(alpha=0.4) + theme_light() + 
+  scale_x_continuous(name = "C", limits = c(3.4,4.5)) + 
+  scale_y_continuous(name = "Density") + 
+  ggtitle("FP006 Source Lots - Outlet Temperature (C)") +
+  geom_vline(aes(xintercept = mean(FP6_Outlet_Temperature_Source_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_Outlet_Temperature_Source_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_Outlet_Temperature_Source_Melt$value)),
+             col="orange",size=1) +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+Violin_Outlet_Temperature <- Outlet_Temperature_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="C") +
+  ggtitle("FP006 Source Lots - Outlet Temperature (C)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+
+Histogram_Inlet_Temperature <- Inlet_Temperature_Graph + 
+  geom_density(alpha=0.4) + theme_light() + 
+  scale_x_continuous(name = "C", limits = c(3.6,4.6)) + 
+  scale_y_continuous(name = "Density") + 
+  ggtitle("FP006 Source Lots - Inlet Temperature (C)") +
+  geom_vline(aes(xintercept = mean(FP6_Inlet_Temperature_Source_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_Inlet_Temperature_Source_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_Inlet_Temperature_Source_Melt$value)),
+             col="orange",size=1) +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+Violin_Inlet_Temperature <- Inlet_Temperature_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="C", limits = c(3.6,4.6)) +
+  ggtitle("FP006 Source Lots - Inlet Temperature (C)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+
+Histogram_Product_FP_Pressure <- Product_FP_Pressure_Graph + 
+  geom_density(alpha=0.4) + theme_light() +  
+  scale_x_continuous(name = "psig") + 
+  scale_y_continuous(name = "Density") + 
+  ggtitle("FP006 Source Lots - Product to FP Pressure (psig)") +
+  geom_vline(aes(xintercept = mean(FP6_Product_FP_Pressure_Source_Melt$value, na.rm = TRUE))
+             ,col = "yellow", size=1) + 
+  geom_vline(aes(xintercept = median(FP6_Product_FP_Pressure_Source_Melt$value, na.rm = TRUE))
+             ,col="blue",size=1) +
+  geom_vline(aes(xintercept = fun.mode(FP6_Product_FP_Pressure_Source_Melt$value)),
+             col="orange",size=1) + 
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+Violin_Product_FP_Pressure <- Product_FP_Pressure_Graph +
+  geom_violin(aes(y=value),scale = "area") +
+  scale_x_continuous(name = "Density") +
+  scale_y_continuous(name="psig") +
+  ggtitle("FP006 Source Lots - Product to FP Pressure (psig)") +
+  guides(fill=guide_legend(title="Change in Mean")) +
+  theme_light()
+
+```
+
+#### Aggregated Distribution {.tabset .tabset-fade .tabset-pills}
+
+First, I proceed to visualize all aggregated continuous parameters available **from Mean Changepoint 3 to 6.**
+
+Here I present an statistical aggregated summary for each continuous parameter:
+
+```{r Summary Aggregated, message=FALSE, warning=FALSE, dev='png', echo=FALSE}
+
+# function to calculate mode
+fun.mode<-function(x){as.numeric(names(sort(-table(x)))[1])}
+
+test1 <-FP6_Out_Turbidity_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "Out Turbidity",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "ppm"
+  )
+
+test2 <-FP6_DP_Control_Source_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "DP Control",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "psid"
+  )
+
+test3 <-FP6_Feed_Pump_P050_Source_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "Feed Pump P050",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "%"
+  )
+
+test4 <-FP6_Flow_Control_Source_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "Flow Control",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "kg/min"
+  )
+
+test5 <-FP6_Inlet_Pressure_Source_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "Inlet Pressure",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+test6 <-FP6_Filtrate_Pressure_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "Filtrate Pressure",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+test7 <-FP6_Outlet_Temperature_Source_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "Outlet Temperature",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "C"
+  )
+
+test8 <-FP6_Inlet_Temperature_Source_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "Inlet Temperature",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "C"
+  )
+
+test9 <- FP6_Product_FP_Pressure_Source_Melt %>% group_by(Changes) %>%
+  summarise(Parameter = "Product to Filter Press Pressure",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(FP6_Product_FP_Pressure_Source_Melt$value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+
+DT::datatable(rbind(test1,test2,test3,test4,test5,test6,test7,test8,test9))
+
+```
+
+Histograms and Violin charts are used to understand data distribution.
+
+Graphs legend:
+
+- __Yellow line:__ Mean
+- __Blue line:__ Median (P50)
+- __Orange line:__ Mode
+
+##### DP Control
+```{r, dev='png', echo=FALSE, fig.height=5.0, fig.width=11, out.width="110%"}
+grid.arrange(Histogram_DP_Control, 
+             Violin_DP_Control, nrow = 1)
+```
+
+##### Feed Pump
+
+```{r, dev='png', echo=FALSE, fig.height=5.0, fig.width=11, out.width="110%"}
+grid.arrange(Histogram_Feed_Pump_P50, 
+             Violin_Feed_Pump_P50, nrow = 1)
+```
+
+##### Flow Control
+
+```{r, dev='png', echo=FALSE, fig.height=5.0, fig.width=11, out.width="110%"}
+grid.arrange(Histogram_Flow_Control, 
+             Violin_Flow_Control, nrow = 1)
+```
+
+##### Inlet Pressure
+
+```{r, dev='png', echo=FALSE, fig.height=5.0, fig.width=11, out.width="110%"}
+grid.arrange(Histogram_Inlet_Pressure, 
+             Violin_Inlet_Pressure, nrow = 1)
+```
+
+##### Filtrate Pressure
+
+```{r, dev='png', echo=FALSE, fig.height=5.0, fig.width=11, out.width="110%"}
+grid.arrange(Histogram_Filtrate_Pressure, 
+             Violin_Filtrate_Pressure, nrow = 1)
+```
+
+##### Inlet Temperature
+
+```{r, dev='png', echo=FALSE, fig.height=5.0, fig.width=11, out.width="110%"}
+grid.arrange(Histogram_Inlet_Temperature, 
+             Violin_Inlet_Temperature, nrow = 1)
+```
+
+##### Outlet Temperature
+
+```{r, dev='png', echo=FALSE, fig.height=5.0, fig.width=11, out.width="110%"}
+grid.arrange(Histogram_Outlet_Temperature, 
+             Violin_Outlet_Temperature, nrow = 1)
+```
+
+##### Product to Filter Press Pressure
+
+```{r, dev='png', echo=FALSE, fig.align = "center", fig.height=5.0, fig.width=11, out.width="110%"}
+grid.arrange(Histogram_Product_FP_Pressure, 
+             Violin_Product_FP_Pressure, nrow = 1)
+```
+
+#### Lot Distribution {.tabset .tabset-fade .tabset-pills}
+
+After aggregated data has been evaluated, I proceed to visualize and create statistical analysis for each continuous parameter over time:
+
+``` {r Feature Exploration 2, echo=FALSE}
+
+# New Table Summary
+test1new <-FP6_Out_Turbidity_Melt %>% group_by(Lot_Number) %>%
+  summarise(Parameter = "Out Turbidity",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "ppm"
+  )
+
+test2new <-FP6_DP_Control_Source_Melt %>% group_by(Lot_Number) %>%
+  summarise(Parameter = "DP Control",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "psid"
+  )
+
+test3new <-FP6_Feed_Pump_P050_Source_Melt %>% group_by(Lot_Number) %>%
+  summarise(Parameter = "Feed Pump P050",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "%"
+  )
+
+test4new <-FP6_Flow_Control_Source_Melt %>% group_by(Lot_Number) %>%
+  summarise(Parameter = "Flow Control",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "kg/min"
+  )
+
+test5new <-FP6_Inlet_Pressure_Source_Melt %>% group_by(Lot_Number) %>%
+  summarise(Parameter = "Inlet Pressure",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+test6new <-FP6_Filtrate_Pressure_Melt %>% group_by(Lot_Number) %>%
+  summarise(Parameter = "Filtrate Pressure",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+test7new <-FP6_Outlet_Temperature_Source_Melt %>% group_by(Lot_Number) %>%
+  summarise(Parameter = "Outlet Temperature",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "C"
+  )
+
+test8new <- FP6_Inlet_Temperature_Source_Melt %>% group_by(Lot_Number) %>%
+  summarise(Parameter = "Inlet Temperature",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "C"
+  )
+
+test9new <- FP6_Product_FP_Pressure_Source_Melt %>% 
+  group_by(Lot_Number) %>%
+  summarise(Parameter = "Product to Filter Press Pressure",
+            Min = round(min(value, na.rm = TRUE),2),
+            Median = round(median(value, na.rm = TRUE),2),
+            Mean = round(mean(value, na.rm = TRUE),2),
+            Mode = round(fun.mode(value),2),
+            Max = round(max(value, na.rm = TRUE),2),
+            Standard_Deviation = round(sd(value, na.rm = TRUE),2),
+            P25 = round(quantile(value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+```
+
+
+##### Out Turbidity Analytics
+
+```{r Summary Out Turbidity, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+## Set up how plot grid dimensions
+par(mfrow = c(1,1))
+
+test1new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 Out Turbidity")
+
+DT::datatable(test1new)
+
+```
+
+##### Differencial Pressure Control Analytics
+
+```{r Summary DP Control, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+test2new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 DP Control")
+
+DT::datatable(test2new)
+
+```
+
+##### Feed Pump P050 Analytics
+
+```{r Summary Feed Pump P050, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+test3new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 Feed Pump P050")
+
+DT::datatable(test3new)
+
+```
+
+##### Flow Control Analytics
+
+```{r Summary Flow Control, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+test4new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 Flow Control")
+
+DT::datatable(test4new)
+
+```
+
+##### Inlet Pressure Analytics
+
+```{r Summary Inlet Pressure, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+test5new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 Inlet Pressure")
+
+DT::datatable(test5new)
+
+```
+
+##### Filtrate Pressure Analytics
+
+```{r Summary Filtrate Pressure, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+test6new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 Filtrate Pressure")
+
+DT::datatable(test6new)
+
+```
+
+##### Outlet Temperature Analytics
+
+```{r Summary Outlet Temperature, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+test7new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 Outlet Temperature")
+
+DT::datatable(test7new)
+
+```
+
+##### Inlet Temperature Analytics
+
+```{r Summary Inlet Temperature, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+test8new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 Inlet Temperature")
+
+DT::datatable(test8new)
+
+```
+
+
+##### Product to Filter Press Pressure
+
+```{r Summary Product to FP Pressure, dev='png', echo=FALSE, fig.align = "center", fig.height=6.5, fig.width=11}
+
+test9new[,-c(2)] %>% tidyr::gather("id", "value", 2:10) %>% 
+  ggplot(., aes(x=Lot_Number,y=value)) +
+  geom_point(aes(colour = value)) + 
+  facet_wrap(~id, scales="free") + 
+  ggtitle("FP006 Product to Filter Press Pressure")
+
+DT::datatable(test9new)
+
+```
+
+## Exploratory Data Analysis (EDA) - Recirculation
+
+At this step, I focus on analyzing all continuous parameters only during the first 60 minutes of recirculation for ***Bioscience lots only and Mean Changepoint 4~6.***
+
+```{r Recirculation Prep, echo=FALSE}
+
+FP006_Out_Turbidity_Source$Changes <- as.factor(FP006_Out_Turbidity_Source$Changes)
+FP006_DP_Control_Source$Changes <- as.factor(FP006_DP_Control_Source$Changes)
+FP006_Feed_Pump_P050_Source$Changes <- as.factor(FP006_Feed_Pump_P050_Source$Changes)
+FP006_Flow_Control_Source$Changes <- as.factor(FP006_Flow_Control_Source$Changes)
+FP006_Inlet_Pressure_Source$Changes <- as.factor(FP006_Inlet_Pressure_Source$Changes)
+FP006_Filtrate_Pressure_Source$Changes <- as.factor(FP006_Filtrate_Pressure_Source$Changes)
+FP006_Outlet_Temperature_Source$Changes <- as.factor(FP006_Outlet_Temperature_Source$Changes)
+FP006_Inlet_Temperature_Source$Changes <- as.factor(FP006_Inlet_Temperature_Source$Changes)
+FP006_Product_FP_Pressure_Source$Changes <- as.factor(FP006_Product_FP_Pressure_Source$Changes)
+
+# Reshape parameters
+#FP6_Out_Turbidity_Melt_0_60 <- melt(FP006_Out_Turbidity_Source[,-c(1,2,4:7,39:ncol(FP006_Out_Turbidity_Source))])
+#FP6_DP_Control_Source_Melt_0_60 <- melt(FP006_DP_Control_Source[,-c(1,2,4:7,39:ncol(FP006_DP_Control_Source))])
+# FP6_Feed_Pump_P050_Source_Melt_0_60 <- melt(FP006_Feed_Pump_P050_Source[,-c(1,2,4:7,39:ncol(FP006_Feed_Pump_P050_Source))])
+# FP6_Flow_Control_Source_Melt_0_60 <- melt(FP006_Flow_Control_Source[,-c(1,2,4:7,39:ncol(FP006_Flow_Control_Source))])
+# FP6_Inlet_Pressure_Source_Melt_0_60 <- melt(FP006_Inlet_Pressure_Source[,-c(1,2,4:7,39:ncol(FP006_Inlet_Pressure_Source))])
+# FP6_Filtrate_Pressure_Melt_0_60 <- melt(FP006_Filtrate_Pressure_Source[,-c(1,2,4:7,39:ncol(FP006_Filtrate_Pressure_Source))])
+# FP6_Outlet_Temperature_Source_Melt_0_60 <- melt(FP006_Outlet_Temperature_Source[,-c(1,2,4:7,39:ncol(FP006_Outlet_Temperature_Source))])
+# FP6_Inlet_Temperature_Source_Melt_0_60 <- melt(FP006_Inlet_Temperature_Source[,-c(1,2,4:7,39:ncol(FP006_Inlet_Temperature_Source))])
+# FP6_Product_FP_Pressure_Source_Melt_0_60 <- melt(FP006_Product_FP_Pressure_Source[,-c(1,2,4:7,39:ncol(FP006_Product_FP_Pressure_Source))])
+
+FP6_Out_Turbidity_Melt_0_60 <- FP006_Out_Turbidity_Source[,-c(2,4:7,39:ncol(FP006_Out_Turbidity_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+FP6_DP_Control_Source_Melt_0_60 <- FP006_DP_Control_Source[,-c(2,4:7,39:ncol(FP006_DP_Control_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+FP6_Feed_Pump_P050_Source_Melt_0_60 <- FP006_Feed_Pump_P050_Source[,-c(2,4:7,39:ncol(FP006_Feed_Pump_P050_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+FP6_Flow_Control_Source_Melt_0_60 <- FP6_Flow_Control_Source_Melt_0_60 <- FP006_Flow_Control_Source[,-c(2,4:7,39:ncol(FP006_Flow_Control_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+FP6_Inlet_Pressure_Source_Melt_0_60 <- FP006_Inlet_Pressure_Source[,-c(2,4:7,39:ncol(FP006_Inlet_Pressure_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+FP6_Filtrate_Pressure_Melt_0_60 <- FP006_Filtrate_Pressure_Source[,-c(2,4:7,39:ncol(FP006_Filtrate_Pressure_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+FP6_Outlet_Temperature_Source_Melt_0_60 <- FP006_Outlet_Temperature_Source[,-c(2,4:7,39:ncol(FP006_Outlet_Temperature_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+FP6_Inlet_Temperature_Source_Melt_0_60 <- FP006_Inlet_Temperature_Source[,-c(2,4:7,39:ncol(FP006_Inlet_Temperature_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+FP6_Product_FP_Pressure_Source_Melt_0_60 <- FP006_Product_FP_Pressure_Source[,-c(2,4:7,39:ncol(FP006_Product_FP_Pressure_Source))] %>% 
+  gather(key = "Minute", value = "Value", -Lot_Number, -Changes)
+
+
+# # Create the ggplot objects
+# Out_Turbidity_Grapht_0_60 <- ggplot(FP6_Out_Turbidity_Melt_0_60, 
+#                               aes(x=Minute))
+# 
+# DP_Control_Grapht_0_60 <- ggplot(FP6_DP_Control_Source_Melt_0_60, 
+#                            aes(x=value)) 
+# 
+# Feed_Pump_P50_Grapht_0_60 <- ggplot(FP6_Feed_Pump_P050_Source_Melt_0_60, 
+#                               aes(x=value)) 
+# 
+# Flow_Control_Grapht_0_60 <- ggplot(FP6_Flow_Control_Source_Melt_0_60, 
+#                              aes(x=value)) 
+# 
+# Inlet_Pressure_Grapht_0_60 <- ggplot(FP6_Inlet_Pressure_Source_Melt_0_60, 
+#                                aes(x=value)) 
+# 
+# Filtrate_Pressure_Grapht_0_60 <- ggplot(FP6_Filtrate_Pressure_Melt_0_60, 
+#                                   aes(x=value)) 
+# 
+# Outlet_Temperature_Grapht_0_60 <- ggplot(FP6_Outlet_Temperature_Source_Melt_0_60, 
+#                                    aes(x=value)) 
+# 
+# Inlet_Temperature_Grapht_0_60 <- ggplot(FP6_Inlet_Temperature_Source_Melt_0_60, 
+#                                   aes(x=value)) 
+# 
+# Product_FP_Pressure_Grapht_0_60 <- ggplot(FP6_Product_FP_Pressure_Source_Melt_0_60, 
+#                                         aes(x=value)) 
+
+```
+
+### Time-series Analysis {.tabset .tabset-fade .tabset-pills}
+
+#### Out Turbidity
+
+```{r Rec Out Turb, dev='png', echo=FALSE, fig.align = "center"}
+
+## Create plot for recirculation by Changepoint
+## Set up how plot grid dimensions
+library(gridExtra)
+
+## Out Turbidity
+Out_Turb_0_60 <- ggplot(FP6_Out_Turbidity_Melt_0_60, 
+                       aes(Minute, 
+                           Value,
+                           color = Changes,
+                           text = Lot_Number)) + 
+  geom_point(size = 2) +
+#  stat_peaks(colour = "red") +
+#  stat_valleys(colour = "blue") +
+  ggtitle("FP006 Out Turbidity Time Analysis - Changepoint 3~6") + 
+  xlab("Recirculation Time (minutes)") + 
+  ylab("ppm") +
+  scale_colour_hue(name  ="Mean Changepoint",
+                   labels=c("08Jul19 - 03Dec19",
+                            "04Dec19 - 14Jan19",
+                            "15Jan19 - 08Feb20",
+                            "09Feb20 - 21Feb20"),
+                   c = 90, l=55) + theme_bw()
+
+ggplotly(Out_Turb_0_60)
+
+```
+
+#### DP Control
+
+```{r Rec DP Cont, dev='png', echo=FALSE, fig.align = "center"}
+
+## DP Control
+DP_Control_0_60 <- ggplot(FP6_DP_Control_Source_Melt_0_60, 
+                      aes(Minute, 
+                           Value,
+                           color = Changes,
+                           text = Lot_Number)) + 
+  geom_point(size = 2) +
+#  stat_peaks(colour = "red") +
+#  stat_valleys(colour = "blue") +
+  ggtitle("FP006 DP Control Time Analysis - Changepoint 3~6") + 
+  xlab("Recirculation Time (minutes)") + 
+  ylab("psid") +
+  scale_colour_hue(name  ="Mean Changepoint",
+                   labels=c("08Jul19 - 03Dec19",
+                            "04Dec19 - 14Jan19",
+                            "15Jan19 - 08Feb20",
+                            "09Feb20 - 21Feb20"),
+                   c = 90, l=55) + theme_bw()
+
+ggplotly(DP_Control_0_60)
+
+```
+
+#### Feed Pump
+
+```{r Rec Feed Pump, dev='png', echo=FALSE, fig.align = "center"}
+
+## Feed Pump
+Feed_Pump_0_60 <- ggplot(FP6_Feed_Pump_P050_Source_Melt_0_60, 
+                        aes(Minute, 
+                           Value,
+                           color = Changes,
+                           text = Lot_Number)) + 
+  geom_point(size = 2) +
+#  stat_peaks(colour = "red") +
+#  stat_valleys(colour = "blue") +
+  ggtitle("FP006 Feed Pump Time Analysis - Changepoint 3~6") + 
+  xlab("Recirculation Time (minutes)") + 
+  ylab("%") +
+  scale_colour_hue(name  ="Mean Changepoint",
+                        labels=c("08Jul19 - 03Dec19",
+                            "04Dec19 - 14Jan19",
+                            "15Jan19 - 08Feb20",
+                            "09Feb20 - 21Feb20"),
+                        c = 90, l = 55) + theme_bw()
+
+ggplotly(Feed_Pump_0_60)
+
+```
+
+#### Flow Control
+
+```{r Rec Flow Cont, dev='png', echo=FALSE, fig.align = "center"}
+
+## Flow Control
+Flow_Control_0_60 <- ggplot(FP6_Flow_Control_Source_Melt_0_60, 
+                        aes(Minute, 
+                           Value,
+                           color = Changes,
+                           text = Lot_Number)) + 
+  geom_point(size = 2) +
+#  stat_peaks(colour = "red") +
+#  stat_valleys(colour = "blue") +
+  ggtitle("FP006 Flow Control Time Analysis - Changepoint 3~6") + 
+  xlab("Recirculation Time (minutes)") + 
+  ylab("kg/min") +
+  scale_colour_hue(name  ="Mean Changepoint",
+                        labels=c("08Jul19 - 03Dec19",
+                            "04Dec19 - 14Jan19",
+                            "15Jan19 - 08Feb20",
+                            "09Feb20 - 21Feb20"),
+                        c = 90, l = 55) + theme_bw()
+
+ggplotly(Flow_Control_0_60)
+
+```
+
+#### Inlet Pressure
+
+```{r Rec Inlet Press, dev='png', echo=FALSE, fig.align = "center"}
+
+## Inlet Pressure
+Inlet_Press_0_60 <- ggplot(FP6_Inlet_Pressure_Source_Melt_0_60, 
+                           aes(Minute, 
+                           Value,
+                           color = Changes,
+                           text = Lot_Number)) + 
+  geom_point(size = 2) +
+#  stat_peaks(colour = "red") +
+#  stat_valleys(colour = "blue") +
+  ggtitle("FP006 Inlet Pressure Time Analysis - Changepoint 3~6") + 
+  xlab("Recirculation Time (minutes)") + 
+  ylab("psig") +
+  scale_colour_hue(name  ="Mean Changepoint",
+                        labels=c("08Jul19 - 03Dec19",
+                            "04Dec19 - 14Jan19",
+                            "15Jan19 - 08Feb20",
+                            "09Feb20 - 21Feb20"),
+                        c = 90, l = 55) + theme_bw()
+
+ggplotly(Inlet_Press_0_60)
+
+```
+
+#### Filtrate Pressure
+
+```{r Rec Filt Pressure, dev='png', echo=FALSE, fig.align = "center"}
+
+## Filtrate Pressure
+Filt_Press_0_60 <- ggplot(FP6_Filtrate_Pressure_Melt_0_60, 
+                          aes(Minute, 
+                           Value,
+                           color = Changes,
+                           text = Lot_Number)) + 
+  geom_point(size = 2) +
+#  stat_peaks(colour = "red") +
+#  stat_valleys(colour = "blue") +
+  ggtitle("FP006 Filtrate Pressure Time Analysis - Changepoint 3~6") + 
+  xlab("Recirculation Time (minutes)") + 
+  ylab("psig") +
+  scale_colour_hue(name  ="Mean Changepoint",
+                   labels=c("08Jul19 - 03Dec19",
+                            "04Dec19 - 14Jan19",
+                            "15Jan19 - 08Feb20",
+                            "09Feb20 - 21Feb20"),
+                   c = 90, l = 55) + theme_bw()
+
+ggplotly(Filt_Press_0_60)
+
+```
+
+#### Product to Filter Press Pressure
+
+```{r Rec Prod to Filt Pressure, dev='png', echo=FALSE, fig.align = "center"}
+
+## Product to Filter Press Pressure
+Prod_FP_Press_0_60 <- ggplot(FP6_Product_FP_Pressure_Source_Melt_0_60, 
+                             aes(Minute, 
+                           Value,
+                           color = Changes,
+                           text = Lot_Number)) + 
+  geom_point(size = 2) +
+  #  stat_peaks(colour = "red") +
+  #  stat_valleys(colour = "blue") +
+  ggtitle("FP006 Product to Filter Press Pressure Time Analysis - Changepoint 3~6") + 
+  xlab("Recirculation Time (minutes)") + 
+  ylab("psig") +
+  scale_colour_hue(name  ="Mean Changepoint",
+                   labels=c("08Jul19 - 03Dec19",
+                            "04Dec19 - 14Jan19",
+                            "15Jan19 - 08Feb20",
+                            "09Feb20 - 21Feb20"),
+                   c = 90, l = 55) + theme_bw()
+
+ggplotly(Prod_FP_Press_0_60)
+
+```
+
+### Correlation Analysis (Minute 6) {.tabset .tabset-fade .tabset-pills}
+
+Now I proceed to visualize scatter plot between different continuous parameters at the __6th minute into recirculation:__
+
+#### Correlation Pump Speed VS Flow Control VS DP Control
+```{r Corr_Pump_VS_Flow_C_6, dev='png', echo=FALSE, fig.align = "center"}
+# Plot correlation Pump VS Flow
+
+pal <- c("black", "blue", "green","red")
+
+# plot(FP006_Feed_Pump_P050_Source$`6`, FP006_Flow_Control_Source$`6`, 
+#      main = "Correlation Plot - Feed Pump Speed VS Flow Control
+#      (6 minutes recirculation)",
+#      xlab = "Feed Pump Speed (%)", ylab = "Flow Control (kg/min)", 
+#      col = FP006_Feed_Pump_P050_Source$Changes, 
+#      cex = FP006_Feed_Pump_P050_Source$Total_Rec_Filt_min/150,
+#      pch = 16,
+#      ylim = c(175,184), xlim = c(70,98))
+# legend("topright", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col=c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x =~FP006_Feed_Pump_P050_Source$`6`, 
+        y =~FP006_Flow_Control_Source$`6`, 
+        type = "scatter",
+        color = ~FP006_Feed_Pump_P050_Source$Changes,
+        colors = pal,
+        name = ~FP006_Feed_Pump_P050_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_DP_Control_Source$`6`, sizeref = 0.2, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Flow_Control_Source$Changes,
+                      '</br> Lot Number: ', FP006_Flow_Control_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Feed_Pump_P050_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Flow_Control_Source$Total_Rec_Filt_min,0),
+                      '</br> Feed Pump Speed: ', round(FP006_Feed_Pump_P050_Source$`6`,1),
+                      '</br> Flow Control: ', round(FP006_Flow_Control_Source$`6`,1),
+                      '</br> DP Control: ', round(FP006_DP_Control_Source$`6`,1))) %>%
+  layout(title = "Correlation Plot - Feed Pump Speed VS Flow Control VS DP Control
+     (6 minutes recirculation)",
+     xaxis = list(title = "Feed Pump Speed (%)",
+                  range = c(70,100)),
+     yaxis = list(title = "Flow Control (kg/min)",
+                  range = c(174,186))
+     )
+
+```
+
+#### Correlation Pump Speed VS Out Turbidity VS DP Control
+```{r Corr_Pump_VS_Out_Turb_6, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot correlation PUmp VS Turbidity
+# plot(FP006_Feed_Pump_P050_Source$`6`, FP006_Out_Turbidity_Source$`6`, 
+#      main = "Correlation Plot - Feed Pump Speed VS Out Turbidity
+#      (6 minutes recirculation)",
+#      xlab = "Feed Pump Speed (%)", ylab = "Out Turbidity (ppm)", 
+#      col = FP006_Out_Turbidity_Source$Changes, 
+#      xlim = c(70,98),
+#      cex = FP006_Feed_Pump_P050_Source$Total_Rec_Filt_min/150,
+#      pch = 16)
+# legend("topleft", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col=c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x =~FP006_Feed_Pump_P050_Source$`6`, 
+        y =~FP006_Out_Turbidity_Source$`6`, 
+        type = "scatter",
+        color = ~FP006_Feed_Pump_P050_Source$Changes,
+        colors = pal,
+        name = ~FP006_Feed_Pump_P050_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_DP_Control_Source$`6`, sizeref = 0.2, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Out_Turbidity_Source$Changes,
+                      '</br> Lot Number: ', FP006_Out_Turbidity_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Feed_Pump_P050_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Out_Turbidity_Source$Total_Rec_Filt_min,0),
+                      '</br> Feed Pump Speed: ', round(FP006_Feed_Pump_P050_Source$`6`,1),
+                      '</br> Out Turbidity: ', round(FP006_Out_Turbidity_Source$`6`,1),
+                      '</br> DP Control: ', round(FP006_DP_Control_Source$`6`,1))) %>%
+  layout(title = "Correlation Plot - Feed Pump Speed VS Out Turbidity VS DP Control
+     (6 minutes recirculation)",
+     xaxis = list(title = "Feed Pump Speed (%)",
+                  range = c(70,100)),
+     yaxis = list(title = "Out Turbidity (ppm)")
+     )
+
+```
+
+#### Correlation Pump Speed VS Inlet Pressure VS Filtrate Pressure
+```{r Corr_Pump_VS_Inlet_Press_6, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot correlation Pump VS Inlet Pressure
+# plot(FP006_Feed_Pump_P050_Source$`6`, FP006_Inlet_Pressure_Source$`6`, 
+#      main = "Correlation Plot - Feed Pump Speed VS Inlet Pressure
+#      (6 minutes recirculation)",
+#      xlab = "Feed Pump Speed (%)", ylab = "Inlet Pressure (psig)", 
+#      col = FP006_Feed_Pump_P050_Source$Changes, 
+#      xlim = c(70,95), ylim = c(35,75),
+#      cex = FP006_Feed_Pump_P050_Source$Total_Rec_Filt_min/150,
+#      pch = 16) 
+# legend("topleft", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col = c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x =~FP006_Feed_Pump_P050_Source$`6`, 
+        y =~FP006_Inlet_Pressure_Source$`6`, 
+        type = "scatter",
+        color = ~FP006_Feed_Pump_P050_Source$Changes,
+        colors = pal,
+        name = ~FP006_Feed_Pump_P050_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_Filtrate_Pressure_Source$`6`, sizeref = 0.5, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Inlet_Pressure_Source$Changes,
+                      '</br> Lot Number: ', FP006_Inlet_Pressure_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Feed_Pump_P050_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Inlet_Pressure_Source$Total_Rec_Filt_min,0),
+                      '</br> Feed Pump Speed: ', round(FP006_Feed_Pump_P050_Source$`6`,1),
+                      '</br> Inlet Pressure: ', round(FP006_Inlet_Pressure_Source$`6`,1),
+                      '</br> Filtrate Pressure: ', round(FP006_Filtrate_Pressure_Source$`6`,1))) %>%
+  layout(title = "Correlation Plot - Feed Pump Speed VS Inlet Pressure VS Filtrate Pressure
+     (6 minutes recirculation)",
+     xaxis = list(title = "Feed Pump Speed (%)",
+                  range = c(70,100)),
+     yaxis = list(title = "Inlet Pressure (psig)",
+                  range = c(34,76))
+     )
+
+```
+
+#### Correlation Inlet Pressure VS Filtrate Pressure VS Product to FP Pressure
+```{r Corr_Inlet_Press_VS_Filt_Press_6, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot Corr Pump VS Filt Pressure
+# plot(FP006_Feed_Pump_P050_Source$`6`, FP006_Filtrate_Pressure_Source$`6`, 
+#      main = "Correlation Plot - Feed Pump Speed VS Filtrate Pressure
+#      (6 minutes recirculation)",
+#      xlab = "Feed Pump Speed (%)", ylab = "Filtrate Pressure (psig)", 
+#      col = FP006_Feed_Pump_P050_Source$Changes, 
+#      xlim = c(70,95),  ylim = c(15,60),
+#      cex = FP006_Feed_Pump_P050_Source$Total_Rec_Filt_min/150,
+#      pch = 16) 
+# legend("topleft", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col = c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x =~FP006_Inlet_Pressure_Source$`6`, 
+        y =~FP006_Filtrate_Pressure_Source$`6`, 
+        type = "scatter",
+        color = ~FP006_Feed_Pump_P050_Source$Changes,
+        colors = pal,
+        name = ~FP006_Feed_Pump_P050_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_Product_FP_Pressure_Source$`6`, sizeref = 0.5, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Filtrate_Pressure_Source$Changes,
+                      '</br> Lot Number: ', FP006_Filtrate_Pressure_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Inlet_Pressure_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Filtrate_Pressure_Source$Total_Rec_Filt_min,0),
+                      '</br> Inlet Pressure: ', round(FP006_Inlet_Pressure_Source$`6`,1),
+                      '</br> Filtrate Pressure: ', round(FP006_Filtrate_Pressure_Source$`6`,1),
+                      '</br> Product to Filter Press Pressure: ', round(FP006_Product_FP_Pressure_Source$`6`,1))) %>%
+  layout(title = "Correlation Plot - Inlet Pressure VS Filtrate Pressure VS Product to FP Pressure
+     (6 minutes recirculation)",
+     xaxis = list(title = "Inlet Pressure (psig)",
+                  range = c(34,76)),
+     yaxis = list(title = "Filtrate Pressure (psig)",
+                  range = c(12,61))
+     )
+
+```
+
+#### Correlation Flow Control VS Inlet Pressure VS Product to FP Pressure
+```{r Corr_Flow_C_VS_Inlet_Press_6, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot Corr Flow VS Turbidity
+# plot(FP006_Flow_Control_Source$`6`, FP006_Out_Turbidity_Source$`6`, 
+#      main = "Correlation Plot - Flow Control VS Filtrate Out Turbidity
+#      (6 minutes recirculation)",
+#      xlab = "Flow Control (kg/min)", ylab = "Out Tubidity (ppm)", 
+#      col = FP006_Out_Turbidity_Source$Changes, 
+#      xlim = c(175,183),
+#      #,  ylim = c(10,60),
+#      cex = FP006_Out_Turbidity_Source$Total_Rec_Filt_min/150,
+#      pch = 16)
+# legend("topright", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col = c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x = ~FP006_Flow_Control_Source$`6`, 
+        y = ~FP006_Inlet_Pressure_Source$`6`, 
+        type = "scatter",
+        color = ~FP006_Flow_Control_Source$Changes,
+        colors = pal,
+        name = ~FP006_Flow_Control_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_Product_FP_Pressure_Source$`6`*100, sizeref = 40, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Inlet_Pressure_Source$Changes,
+                      '</br> Lot Number: ', FP006_Inlet_Pressure_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Flow_Control_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Inlet_Pressure_Source$Total_Rec_Filt_min,0),
+                      '</br> Flow Control: ', round(FP006_Flow_Control_Source$`6`,1),
+                      '</br> Inlet Pressure: ', round(FP006_Inlet_Pressure_Source$`6`,1),
+                      '</br> Product to FP Pressure: ', round(FP006_Product_FP_Pressure_Source$`6`,1))) %>%
+  layout(title = "Correlation Plot - Flow Control VS Inlet Pressure VS Product to FP Pressure
+     (6 minutes recirculation)",
+     xaxis = list(title = "Flow Control (kg/min)",
+                  range = c(174,185)),
+     yaxis = list(title = "Inlet Pressure (psig)",
+                  range = c(35,75))
+     )
+
+```
+
+#### Correlation Flow Control VS DP Control VS Inlet Pressure
+```{r Corr_Flow_C_VS_DO_Control_6, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot Corr Flow VS Turbidity
+# plot(FP006_Flow_Control_Source$`6`, FP006_Inlet_Temperature_Source$`6`, 
+#      main = "Correlation Plot - Flow Control VS Inlet Temperature
+#      (6 minutes recirculation)",
+#      xlab = "Flow Control (kg/min)", ylab = "Inlet Temperature (C)", 
+#      col = FP006_Flow_Control_Source$Changes, 
+#      xlim = c(175,183),
+#      #,  ylim = c(10,60),
+#      cex = FP006_Flow_Control_Source$Total_Rec_Filt_min/150,
+#      pch = 16)
+# legend("topleft", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col = c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x = ~FP006_Flow_Control_Source$`6`, 
+        y = ~FP006_DP_Control_Source$`6`, 
+        type = "scatter",
+        color = ~FP006_Flow_Control_Source$Changes,
+        colors = pal,
+        name = ~FP006_Flow_Control_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_Inlet_Pressure_Source$`6`, sizeref = 0.4, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_DP_Control_Source$Changes,
+                      '</br> Lot Number: ', FP006_DP_Control_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Flow_Control_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_DP_Control_Source$Total_Rec_Filt_min,0),
+                      '</br> Flow Control: ', round(FP006_Flow_Control_Source$`6`,1),
+                      '</br> DP Control: ', round(FP006_DP_Control_Source$`6`,1),
+                      '</br> Inlet Pressure: ', round(FP006_Inlet_Pressure_Source$`6`,1))) %>%
+  layout(title = "Correlation Plot - Flow Control VS DP Control VS Inlet Pressure
+     (6 minutes recirculation)",
+     xaxis = list(title = "Flow Control (kg/min)",
+                  range = c(174,185)),
+     yaxis = list(title = "DP Control (psid)",
+                  range = c(18,26))
+     )
+
+```
+
+### Correlation Analysis (Minute 12) {.tabset .tabset-fade .tabset-pills}
+
+Now I proceed to visualize scatter plot between different continuous parameters at the __12th minute into recirculation:__
+
+#### Correlation Pump Speed VS Flow Control VS DP Control
+```{r Corr_Pump_VS_Flow_C_12, dev='png', echo=FALSE, fig.align = "center"}
+# Plot correlation Pump VS Flow
+
+pal <- c("black", "blue", "green","red")
+
+# plot(FP006_Feed_Pump_P050_Source$`6`, FP006_Flow_Control_Source$`6`, 
+#      main = "Correlation Plot - Feed Pump Speed VS Flow Control
+#      (6 minutes recirculation)",
+#      xlab = "Feed Pump Speed (%)", ylab = "Flow Control (kg/min)", 
+#      col = FP006_Feed_Pump_P050_Source$Changes, 
+#      cex = FP006_Feed_Pump_P050_Source$Total_Rec_Filt_min/150,
+#      pch = 16,
+#      ylim = c(175,184), xlim = c(70,98))
+# legend("topright", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col=c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x =~FP006_Feed_Pump_P050_Source$`12`, 
+        y =~FP006_Flow_Control_Source$`12`, 
+        type = "scatter",
+        color = ~FP006_Feed_Pump_P050_Source$Changes,
+        colors = pal,
+        name = ~FP006_Feed_Pump_P050_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_DP_Control_Source$`12`, sizeref = 0.2, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Flow_Control_Source$Changes,
+                      '</br> Lot Number: ', FP006_Flow_Control_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Feed_Pump_P050_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Flow_Control_Source$Total_Rec_Filt_min,0),
+                      '</br> Feed Pump Speed: ', round(FP006_Feed_Pump_P050_Source$`12`,1),
+                      '</br> Flow Control: ', round(FP006_Flow_Control_Source$`12`,1),
+                      '</br> DP Control: ', round(FP006_DP_Control_Source$`12`,1))) %>%
+  layout(title = "Correlation Plot - Feed Pump Speed VS Flow Control VS DP Control
+     (12 minutes recirculation)",
+     xaxis = list(title = "Feed Pump Speed (%)",
+                  range = c(70,102)),
+     yaxis = list(title = "Flow Control (kg/min)",
+                  range = c(118,192))
+     )
+
+```
+
+#### Correlation Pump Speed VS Out Turbidity VS DP Control
+```{r Corr_Pump_VS_Out_Turb_12, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot correlation PUmp VS Turbidity
+# plot(FP006_Feed_Pump_P050_Source$`6`, FP006_Out_Turbidity_Source$`6`, 
+#      main = "Correlation Plot - Feed Pump Speed VS Out Turbidity
+#      (6 minutes recirculation)",
+#      xlab = "Feed Pump Speed (%)", ylab = "Out Turbidity (ppm)", 
+#      col = FP006_Out_Turbidity_Source$Changes, 
+#      xlim = c(70,98),
+#      cex = FP006_Feed_Pump_P050_Source$Total_Rec_Filt_min/150,
+#      pch = 16)
+# legend("topleft", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col=c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x =~FP006_Feed_Pump_P050_Source$`12`, 
+        y =~FP006_Out_Turbidity_Source$`12`, 
+        type = "scatter",
+        color = ~FP006_Feed_Pump_P050_Source$Changes,
+        colors = pal,
+        name = ~FP006_Feed_Pump_P050_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_DP_Control_Source$`12`, sizeref = 0.2, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Out_Turbidity_Source$Changes,
+                      '</br> Lot Number: ', FP006_Out_Turbidity_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Feed_Pump_P050_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Out_Turbidity_Source$Total_Rec_Filt_min,0),
+                      '</br> Feed Pump Speed: ', round(FP006_Feed_Pump_P050_Source$`12`,1),
+                      '</br> Out Turbidity: ', round(FP006_Out_Turbidity_Source$`12`,1),
+                      '</br> DP Control: ', round(FP006_DP_Control_Source$`12`,1))) %>%
+  layout(title = "Correlation Plot - Feed Pump Speed VS Out Turbidity VS DP Control
+     (12 minutes recirculation)",
+     xaxis = list(title = "Feed Pump Speed (%)",
+                  range = c(68,100)),
+     yaxis = list(title = "Out Turbidity (ppm)",
+                  range = c(0,2.2))
+     )
+
+```
+
+#### Correlation Pump Speed VS Inlet Pressure VS Filtrate Pressure
+```{r Corr_Pump_VS_Inlet_Press_12, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot correlation Pump VS Inlet Pressure
+# plot(FP006_Feed_Pump_P050_Source$`6`, FP006_Inlet_Pressure_Source$`6`, 
+#      main = "Correlation Plot - Feed Pump Speed VS Inlet Pressure
+#      (6 minutes recirculation)",
+#      xlab = "Feed Pump Speed (%)", ylab = "Inlet Pressure (psig)", 
+#      col = FP006_Feed_Pump_P050_Source$Changes, 
+#      xlim = c(70,95), ylim = c(35,75),
+#      cex = FP006_Feed_Pump_P050_Source$Total_Rec_Filt_min/150,
+#      pch = 16) 
+# legend("topleft", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col = c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x =~FP006_Feed_Pump_P050_Source$`12`, 
+        y =~FP006_Inlet_Pressure_Source$`12`, 
+        type = "scatter",
+        color = ~FP006_Feed_Pump_P050_Source$Changes,
+        colors = pal,
+        name = ~FP006_Feed_Pump_P050_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_Filtrate_Pressure_Source$`12`, sizeref = 0.3, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Inlet_Pressure_Source$Changes,
+                      '</br> Lot Number: ', FP006_Inlet_Pressure_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Feed_Pump_P050_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Inlet_Pressure_Source$Total_Rec_Filt_min,0),
+                      '</br> Feed Pump Speed: ', round(FP006_Feed_Pump_P050_Source$`12`,1),
+                      '</br> Inlet Pressure: ', round(FP006_Inlet_Pressure_Source$`12`,1),
+                      '</br> Filtrate Pressure: ', round(FP006_Filtrate_Pressure_Source$`12`,1))) %>%
+  layout(title = "Correlation Plot - Feed Pump Speed VS Inlet Pressure VS Filtrate Pressure
+     (12 minutes recirculation)",
+     xaxis = list(title = "Feed Pump Speed (%)",
+                  range = c(70,100)),
+     yaxis = list(title = "Inlet Pressure (psig)",
+                  range = c(34,80))
+     )
+
+```
+
+#### Correlation Inlet Pressure VS Filtrate Pressure VS Product to FP Pressure
+```{r Corr_Inlet_Press_VS_Filt_Press_12, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot Corr Pump VS Filt Pressure
+# plot(FP006_Feed_Pump_P050_Source$`6`, FP006_Filtrate_Pressure_Source$`6`, 
+#      main = "Correlation Plot - Feed Pump Speed VS Filtrate Pressure
+#      (6 minutes recirculation)",
+#      xlab = "Feed Pump Speed (%)", ylab = "Filtrate Pressure (psig)", 
+#      col = FP006_Feed_Pump_P050_Source$Changes, 
+#      xlim = c(70,95),  ylim = c(15,60),
+#      cex = FP006_Feed_Pump_P050_Source$Total_Rec_Filt_min/150,
+#      pch = 16) 
+# legend("topleft", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col = c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x =~FP006_Inlet_Pressure_Source$`12`, 
+        y =~FP006_Filtrate_Pressure_Source$`12`, 
+        type = "scatter",
+        color = ~FP006_Feed_Pump_P050_Source$Changes,
+        colors = pal,
+        name = ~FP006_Feed_Pump_P050_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_Product_FP_Pressure_Source$`12`, sizeref = 0.4, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Filtrate_Pressure_Source$Changes,
+                      '</br> Lot Number: ', FP006_Filtrate_Pressure_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Inlet_Pressure_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Filtrate_Pressure_Source$Total_Rec_Filt_min,0),
+                      '</br> Inlet Pressure: ', round(FP006_Inlet_Pressure_Source$`12`,1),
+                      '</br> Filtrate Pressure: ', round(FP006_Filtrate_Pressure_Source$`12`,1),
+                      '</br> Product to Filter Press Pressure: ', round(FP006_Product_FP_Pressure_Source$`12`,1))) %>%
+  layout(title = "Correlation Plot - Inlet Pressure VS Filtrate Pressure VS Product to FP Pressure
+     (12 minutes recirculation)",
+     xaxis = list(title = "Inlet Pressure (psig)",
+                  range = c(43,74)),
+     yaxis = list(title = "Filtrate Pressure (psig)",
+                  range = c(20,65))
+     )
+
+```
+
+#### Correlation Flow Control VS Inlet Pressure VS Product to FP Pressure
+```{r Corr_Flow_C_VS_Inlet_Press_12, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot Corr Flow VS Turbidity
+# plot(FP006_Flow_Control_Source$`6`, FP006_Out_Turbidity_Source$`6`, 
+#      main = "Correlation Plot - Flow Control VS Filtrate Out Turbidity
+#      (6 minutes recirculation)",
+#      xlab = "Flow Control (kg/min)", ylab = "Out Tubidity (ppm)", 
+#      col = FP006_Out_Turbidity_Source$Changes, 
+#      xlim = c(175,183),
+#      #,  ylim = c(10,60),
+#      cex = FP006_Out_Turbidity_Source$Total_Rec_Filt_min/150,
+#      pch = 16)
+# legend("topright", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col = c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x = ~FP006_Flow_Control_Source$`12`, 
+        y = ~FP006_Inlet_Pressure_Source$`12`, 
+        type = "scatter",
+        color = ~FP006_Flow_Control_Source$Changes,
+        colors = pal,
+        name = ~FP006_Flow_Control_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_Product_FP_Pressure_Source$`12`*100, sizeref = 30, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_Inlet_Pressure_Source$Changes,
+                      '</br> Lot Number: ', FP006_Inlet_Pressure_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Flow_Control_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_Inlet_Pressure_Source$Total_Rec_Filt_min,0),
+                      '</br> Flow Control: ', round(FP006_Flow_Control_Source$`12`,1),
+                      '</br> Inlet Pressure: ', round(FP006_Inlet_Pressure_Source$`12`,1),
+                      '</br> Product to FP Pressure: ', round(FP006_Product_FP_Pressure_Source$`12`,1))) %>%
+  layout(title = "Correlation Plot - Flow Control VS Inlet Pressure VS Product to FP Pressure
+     (12 minutes recirculation)",
+     xaxis = list(title = "Flow Control (kg/min)",
+                  range = c(118,186)),
+     yaxis = list(title = "Inlet Pressure (psig)",
+                  range = c(40,80))
+     )
+
+```
+
+#### Correlation Flow Control VS DP Control VS Inlet Pressure
+```{r Corr_Flow_C_VS_DP_Control_12, dev='png', echo=FALSE, fig.align = "center"}
+
+# Plot Corr Flow VS Turbidity
+# plot(FP006_Flow_Control_Source$`6`, FP006_Inlet_Temperature_Source$`6`, 
+#      main = "Correlation Plot - Flow Control VS Inlet Temperature
+#      (6 minutes recirculation)",
+#      xlab = "Flow Control (kg/min)", ylab = "Inlet Temperature (C)", 
+#      col = FP006_Flow_Control_Source$Changes, 
+#      xlim = c(175,183),
+#      #,  ylim = c(10,60),
+#      cex = FP006_Flow_Control_Source$Total_Rec_Filt_min/150,
+#      pch = 16)
+# legend("topleft", legend = c("08Jul19 - 03Dec19",
+#                             "04Dec19 - 14Jan19",
+#                             "15Jan19 - 08Feb20",
+#                             "09Feb20 - 21Feb20"),
+#        title = "Mean Changepoints",
+#        bty = "n",
+#        col = c(1:6), 
+#        pch = 16, cex=0.8)
+
+plot_ly(x = ~FP006_Flow_Control_Source$`12`, 
+        y = ~FP006_DP_Control_Source$`12`, 
+        type = "scatter",
+        color = ~FP006_Flow_Control_Source$Changes,
+        colors = pal,
+        name = ~FP006_Flow_Control_Source$Changes,
+        mode = 'markers',
+        marker = list(size = ~FP006_Inlet_Pressure_Source$`12`, sizeref = 0.4, sizemode = 'area'),
+        hoverinfo = 'text',
+        text = ~paste('</br> Mean Changepoint: ', FP006_DP_Control_Source$Changes,
+                      '</br> Lot Number: ', FP006_DP_Control_Source$Lot_Number,
+                      '</br> Filtration Start: ', FP006_Flow_Control_Source$Filt_Start,
+                      '</br> Filtration Time: ', round(FP006_DP_Control_Source$Total_Rec_Filt_min,0),
+                      '</br> Flow Control: ', round(FP006_Flow_Control_Source$`12`,1),
+                      '</br> DP Control: ', round(FP006_DP_Control_Source$`12`,1),
+                      '</br> Inlet Pressure: ', round(FP006_Inlet_Pressure_Source$`12`,1))) %>%
+  layout(title = "Correlation Plot - Flow Control VS DP Control VS Inlet Pressure
+     (12 minutes recirculation)",
+     xaxis = list(title = "Flow Control (kg/min)",
+                  range = c(118,195)),
+     yaxis = list(title = "DP Control (psid)",
+                  range = c(10,30))
+     )
+
+```
+
+
+### Analysis on last 4 Changepoints {.tabset .tabset-fade .tabset-pills}
+
+For this analysis, I proceed to filter dataset to focus on the following changepoints:
+
+**Changepoint 3 = 08Jul19 - 03Dec19**   
+**Changepoint 4 = 04Dec19 - 14Jan20**   
+**Changepoint 5 = 15Jan20 - 08Feb20**   
+**Changepoint 5 = 09Feb20 - 21Feb20**   
+
+After data have been selected based on changepoints above, I proceed to create a **summary statistics** followed by *histogram/boxplot* to understand data distribution:
+
+```{r Prepare Change 4-6, echo=FALSE}
+
+# Pump P050
+# FP6_Feed_Pump_P050_Source_Melt_0_60_C4_6 <- FP6_Feed_Pump_P050_Source_Melt_0_60 
+#   filter(as.numeric(FP6_Feed_Pump_P050_Source_Melt_0_60$Changes)>2)
+# 
+# FP6_Feed_Pump_P050_Source_Melt_0_60_C4_6$Changes <- as.numeric(FP6_Feed_Pump_P050_Source_Melt_0_60_C4_6$Changes)
+# FP6_Feed_Pump_P050_Source_Melt_0_60_C4_6$Changes <- as.factor(FP6_Feed_Pump_P050_Source_Melt_0_60_C4_6$Changes)
+
+# Flow Control
+# FP6_Flow_Control_Source_Melt_0_60_C4_6 <- FP6_Flow_Control_Source_Melt_0_60 
+#   filter(as.numeric(FP6_Flow_Control_Source_Melt_0_60$Changes)>2)
+# 
+# FP6_Flow_Control_Source_Melt_0_60_C4_6$Changes <- as.numeric(FP6_Flow_Control_Source_Melt_0_60_C4_6$Changes)
+# FP6_Flow_Control_Source_Melt_0_60_C4_6$Changes <- as.factor(FP6_Flow_Control_Source_Melt_0_60_C4_6$Changes)
+
+# Differential Pressure
+# FP6_DP_Control_Source_Melt_0_60_C4_6 <- FP6_DP_Control_Source_Melt_0_60 
+#   filter(as.numeric(FP6_DP_Control_Source_Melt_0_60$Changes)>2)
+# 
+# FP6_DP_Control_Source_Melt_0_60_C4_6$Changes <- as.numeric(FP6_DP_Control_Source_Melt_0_60_C4_6$Changes)
+# FP6_DP_Control_Source_Melt_0_60_C4_6$Changes <- as.factor(FP6_DP_Control_Source_Melt_0_60_C4_6$Changes)
+
+# Inlet Pressure
+# FP6_Inlet_Pressure_Source_Melt_0_60_C4_6 <- FP6_Inlet_Pressure_Source_Melt_0_60 
+#   filter(as.numeric(FP6_Inlet_Pressure_Source_Melt_0_60$Changes)>2)
+# 
+# FP6_Inlet_Pressure_Source_Melt_0_60_C4_6$Changes <- as.numeric(FP6_Inlet_Pressure_Source_Melt_0_60_C4_6$Changes)
+# FP6_Inlet_Pressure_Source_Melt_0_60_C4_6$Changes <- as.factor(FP6_Inlet_Pressure_Source_Melt_0_60_C4_6$Changes)
+
+# Inlet Temperature
+# FP6_Inlet_Temperature_Source_Melt_0_60_C4_6 <- FP6_Inlet_Temperature_Source_Melt_0_60 
+#   filter(as.numeric(FP6_Inlet_Temperature_Source_Melt_0_60$Changes)>2)
+# 
+# FP6_Inlet_Temperature_Source_Melt_0_60_C4_6$Changes <- as.numeric(FP6_Inlet_Temperature_Source_Melt_0_60_C4_6$Changes)
+# FP6_Inlet_Temperature_Source_Melt_0_60_C4_6$Changes <- as.factor(FP6_Inlet_Temperature_Source_Melt_0_60_C4_6$Changes)
+
+# Filtrate Pressure
+# FP6_Filtrate_Pressure_Source_Melt_0_60_C4_6 <- FP6_Filtrate_Pressure_Melt_0_60
+#   filter(as.numeric(FP6_Filtrate_Pressure_Melt_0_60$Changes)>2)
+# 
+# FP6_Filtrate_Pressure_Source_Melt_0_60_C4_6$Changes <- as.numeric(FP6_Filtrate_Pressure_Source_Melt_0_60_C4_6$Changes)
+# FP6_Filtrate_Pressure_Source_Melt_0_60_C4_6$Changes <- as.factor(FP6_Filtrate_Pressure_Source_Melt_0_60_C4_6$Changes)
+
+# Outlet Temperature
+# FP6_Outlet_Temperature_Source_Melt_0_60_C4_6 <- FP6_Outlet_Temperature_Source_Melt_0_60 
+#   filter(as.numeric(FP6_Outlet_Temperature_Source_Melt_0_60$Changes)>2)
+# 
+# FP6_Outlet_Temperature_Source_Melt_0_60_C4_6$Changes <- as.numeric(FP6_Outlet_Temperature_Source_Melt_0_60_C4_6$Changes)
+# FP6_Outlet_Temperature_Source_Melt_0_60_C4_6$Changes <- as.factor(FP6_Outlet_Temperature_Source_Melt_0_60_C4_6$Changes)
+
+# Product to FP Pressure
+# FP6_Product_FP_Pressure_Source_Melt_0_60_C4_6 <- FP6_Product_FP_Pressure_Source_Melt_0_60 
+#   filter(as.numeric(FP6_Product_FP_Pressure_Source_Melt_0_60$Changes)>2)
+# 
+# FP6_Product_FP_Pressure_Source_Melt_0_60_C4_6$Changes <- as.numeric(FP6_Product_FP_Pressure_Source_Melt_0_60_C4_6$Changes)
+# FP6_Product_FP_Pressure_Source_Melt_0_60_C4_6$Changes <- as.factor(FP6_Product_FP_Pressure_Source_Melt_0_60_C4_6$Changes)
+
+
+#Summary Analysis
+test1_c4_6 <-FP6_Feed_Pump_P050_Source_Melt_0_60 %>%
+  summarise(Parameter = "Feed Pump P050",
+            Min = round(min(Value, na.rm = TRUE),2),
+            Median = round(median(Value, na.rm = TRUE),2),
+            Mean = round(mean(Value, na.rm = TRUE),2),
+            Mode = round(fun.mode(Value),2),
+            Max = round(max(Value, na.rm = TRUE),2),
+            σ = round(sd(Value, na.rm = TRUE),2),
+            P25 = round(quantile(Value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(Value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(Value, na.rm = TRUE),2),
+            Unit = "%"
+  )
+
+test2_c4_6 <-FP6_Flow_Control_Source_Melt_0_60 %>%
+  summarise(Parameter = "Flow Control",
+            Min = round(min(Value, na.rm = TRUE),2),
+            Median = round(median(Value, na.rm = TRUE),2),
+            Mean = round(mean(Value, na.rm = TRUE),2),
+            Mode = round(fun.mode(Value),2),
+            Max = round(max(Value, na.rm = TRUE),2),
+            σ = round(sd(Value, na.rm = TRUE),2),
+            P25 = round(quantile(Value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(Value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(Value, na.rm = TRUE),2),
+            Unit = "kg/min"
+  )
+
+test3_c4_6 <-FP6_Inlet_Pressure_Source_Melt_0_60 %>%
+  summarise(Parameter = "Inlet Pressure",
+            Min = round(min(Value, na.rm = TRUE),2),
+            Median = round(median(Value, na.rm = TRUE),2),
+            Mean = round(mean(Value, na.rm = TRUE),2),
+            Mode = round(fun.mode(Value),2),
+            Max = round(max(Value, na.rm = TRUE),2),
+            σ = round(sd(Value, na.rm = TRUE),2),
+            P25 = round(quantile(Value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(Value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(Value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+test4_c4_6 <-FP6_Inlet_Temperature_Source_Melt_0_60 %>%
+  summarise(Parameter = "Inlet Temperature",
+            Min = round(min(Value, na.rm = TRUE),2),
+            Median = round(median(Value, na.rm = TRUE),2),
+            Mean = round(mean(Value, na.rm = TRUE),2),
+            Mode = round(fun.mode(Value),2),
+            Max = round(max(Value, na.rm = TRUE),2),
+            σ = round(sd(Value, na.rm = TRUE),2),
+            P25 = round(quantile(Value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(Value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(Value, na.rm = TRUE),2),
+            Unit = "C"
+  )
+
+test5_c4_6 <-FP6_Filtrate_Pressure_Melt_0_60 %>%
+  summarise(Parameter = "Filtrate Pressure",
+            Min = round(min(Value, na.rm = TRUE),2),
+            Median = round(median(Value, na.rm = TRUE),2),
+            Mean = round(mean(Value, na.rm = TRUE),2),
+            Mode = round(fun.mode(Value),2),
+            Max = round(max(Value, na.rm = TRUE),2),
+            σ = round(sd(Value, na.rm = TRUE),2),
+            P25 = round(quantile(Value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(Value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(Value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+test6_c4_6 <-FP6_Outlet_Temperature_Source_Melt_0_60 %>%
+  summarise(Parameter = "Outlet Temperature",
+            Min = round(min(Value, na.rm = TRUE),2),
+            Median = round(median(Value, na.rm = TRUE),2),
+            Mean = round(mean(Value, na.rm = TRUE),2),
+            Mode = round(fun.mode(Value),2),
+            Max = round(max(Value, na.rm = TRUE),2),
+            σ = round(sd(Value, na.rm = TRUE),2),
+            P25 = round(quantile(Value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(Value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(Value, na.rm = TRUE),2),
+            Unit = "C"
+  )
+
+test7_c4_6 <-FP6_Product_FP_Pressure_Source_Melt_0_60 %>%
+  summarise(Parameter = "Product to Filter Press Pressure",
+            Min = round(min(Value, na.rm = TRUE),2),
+            Median = round(median(Value, na.rm = TRUE),2),
+            Mean = round(mean(Value, na.rm = TRUE),2),
+            Mode = round(fun.mode(Value),2),
+            Max = round(max(Value, na.rm = TRUE),2),
+            σ = round(sd(Value, na.rm = TRUE),2),
+            P25 = round(quantile(Value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(Value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(Value, na.rm = TRUE),2),
+            Unit = "psig"
+  )
+
+test8_c4_6 <-FP6_DP_Control_Source_Melt_0_60 %>%
+  summarise(Parameter = "Differential Pressure",
+            Min = round(min(Value, na.rm = TRUE),2),
+            Median = round(median(Value, na.rm = TRUE),2),
+            Mean = round(mean(Value, na.rm = TRUE),2),
+            Mode = round(fun.mode(Value),2),
+            Max = round(max(Value, na.rm = TRUE),2),
+            σ = round(sd(Value, na.rm = TRUE),2),
+            P25 = round(quantile(Value, na.rm = TRUE,.25),2),
+            P75 = round(quantile(Value, na.rm = TRUE,.75),2),
+            Kurtosis = round(psych::kurtosi(Value, na.rm = TRUE),2),
+            Unit = "psid"
+  )
+
+
+# DT::datatable(rbind(test1_c4_6, test2_c4_6, test3_c4_6,
+#                     test4_c4_6, test5_c4_6, test6_c4_6,
+#                     test7_c4_6, test8_c4_6))
+
+knitr::kable(rbind(test1_c4_6, test2_c4_6, test3_c4_6,
+                    test4_c4_6, test5_c4_6, test6_c4_6,
+                    test7_c4_6, test8_c4_6))
+
+```
+
+#### Feed Pump P050
+```{r Feed_Pump_Analytics_C4_6, dev='png', echo=FALSE, fig.align = "center", fig.height=5.5, fig.width=11, out.width="110%"}
+transparentTheme(trans = .8)
+h1 <- featurePlot(x = FP6_Feed_Pump_P050_Source_Melt_0_60[,-c(1,2,3)],
+                  y = FP6_Feed_Pump_P050_Source_Melt_0_60$Changes,
+                  plot = "density", 
+                  scales = list(x = list(relation="free"),
+                                y = list(relation="free")), 
+                  adjust = 1.5, 
+                  pch = "|",
+                  auto.key = list(columns = 4), 
+                  labels = c("%", "Density"))
+
+
+b1 <- featurePlot(x = FP6_Feed_Pump_P050_Source_Melt_0_60[, -c(1,2,3)], 
+                  y = FP6_Feed_Pump_P050_Source_Melt_0_60$Changes, 
+                  plot = "box", 
+                  col = FP6_Feed_Pump_P050_Source_Melt_0_60$Changes,
+                  ## Pass in options to bwplot() 
+                  scales = list(y = list(relation="free"),
+                                x = list()),
+                  #auto.key = list(columns = 3), 
+                  xlim=c("CP 3","CP 4","CP 5","CP 6"),
+                  labels = c("Changepoint","%"))
+
+grid.arrange(h1, b1, nrow = 1)
+
+```
+
+#### Flow Control
+```{r Flow_C_Analytics_C4_6, dev='png', echo=FALSE, fig.align = "center", fig.height=5.5, fig.width=11, out.width="110%"}
+transparentTheme(trans = .8)
+h2 <- featurePlot(x = FP6_Flow_Control_Source_Melt_0_60[,-c(1,2,3)],
+                  y = FP6_Flow_Control_Source_Melt_0_60$Changes,
+                  plot = "density", 
+                  scales = list(x = list(relation="free"),
+                                y = list(relation="free")), 
+                  adjust = 1.5, 
+                  pch = "|",
+                  auto.key = list(columns = 4), 
+                  labels = c("kg/min", "Density"))
+
+
+b2 <- featurePlot(x = FP6_Flow_Control_Source_Melt_0_60[, -c(1,2,3)], 
+                  y = FP6_Flow_Control_Source_Melt_0_60$Changes, 
+                  plot = "box", 
+                  col = FP6_Flow_Control_Source_Melt_0_60$Changes,
+                  ## Pass in options to bwplot() 
+                  scales = list(y = list(relation="free"),
+                                x = list()),
+                  #auto.key = list(columns = 3), 
+                  xlim=c("CP 3","CP 4","CP 5","CP 6"),
+                  labels = c("Changepoint", "kg/min"))
+
+grid.arrange(h2, b2, nrow = 1)
+
+```
+
+#### Inlet Pressure
+```{r Inlet_Press_Analytics_C4_6, dev='png', echo=FALSE, fig.align = "center", fig.height=5.5, fig.width=11, out.width="110%"}
+transparentTheme(trans = .8)
+h3 <- featurePlot(x = FP6_Inlet_Pressure_Source_Melt_0_60[,-c(1,2,3)],
+                  y = FP6_Inlet_Pressure_Source_Melt_0_60$Changes,
+                  plot = "density", 
+                  scales = list(x = list(relation="free"),
+                                y = list(relation="free")), 
+                  adjust = 1.5, 
+                  pch = "|",
+                  auto.key = list(columns = 4), 
+                  labels = c("psig", "Density"))
+
+
+b3 <- featurePlot(x = FP6_Inlet_Pressure_Source_Melt_0_60[, -c(1,2,3)], 
+                  y = FP6_Inlet_Pressure_Source_Melt_0_60$Changes, 
+                  plot = "box", 
+                  col = FP6_Inlet_Pressure_Source_Melt_0_60$Changes,
+                  ## Pass in options to bwplot() 
+                  scales = list(y = list(relation="free"),
+                                x = list()),
+                  #auto.key = list(columns = 3), 
+                  xlim=c("CP 3","CP 4","CP 5","CP 6"),
+                  labels = c("Changepoint", "psig"))
+
+grid.arrange(h3, b3, nrow = 1)
+
+```
+
+#### Inlet Temperature
+```{r Inlet_Temp_Analytics_C4_6, dev='png', echo=FALSE, fig.align = "center", fig.height=5.5, fig.width=11, out.width="110%"}
+transparentTheme(trans = .8)
+h4 <- featurePlot(x = FP6_Inlet_Temperature_Source_Melt_0_60[,-c(1,2,3)],
+                  y = FP6_Inlet_Temperature_Source_Melt_0_60$Changes,
+                  plot = "density", 
+                  scales = list(x = list(relation="free"),
+                                y = list(relation="free")), 
+                  adjust = 1.5, 
+                  pch = "|",
+                  auto.key = list(columns = 4), 
+                  labels = c("C", "Density"))
+
+
+b4 <- featurePlot(x = FP6_Inlet_Temperature_Source_Melt_0_60[, -c(1,2,3)], 
+                  y = FP6_Inlet_Temperature_Source_Melt_0_60$Changes, 
+                  plot = "box", 
+                  col = FP6_Inlet_Temperature_Source_Melt_0_60$Changes,
+                  ## Pass in options to bwplot() 
+                  scales = list(y = list(relation="free"),
+                                x = list()),
+                  #auto.key = list(columns = 3), 
+                  xlim=c("CP 3","CP 4","CP 5","CP 6"),
+                  labels = c("Changepoint", "C"))
+
+grid.arrange(h4, b4, nrow = 1)
+
+```
+
+#### Filtrate Pressure
+```{r Filt_Press_Analytics_C4_6, dev='png', echo=FALSE, fig.align = "center", fig.height=5.5, fig.width=11, out.width="110%"}
+transparentTheme(trans = .8)
+h5 <- featurePlot(x = FP6_Filtrate_Pressure_Melt_0_60[,-c(1,2,3)],
+                  y = FP6_Filtrate_Pressure_Melt_0_60$Changes,
+                  plot = "density", 
+                  scales = list(x = list(relation="free"),
+                                y = list(relation="free")), 
+                  adjust = 1.5, 
+                  pch = "|",
+                  auto.key = list(columns = 4), 
+                  labels = c("psig", "Density"))
+
+
+b5 <- featurePlot(x = FP6_Filtrate_Pressure_Melt_0_60[, -c(1,2,3)], 
+                  y = FP6_Filtrate_Pressure_Melt_0_60$Changes, 
+                  plot = "box", 
+                  col = FP6_Filtrate_Pressure_Melt_0_60$Changes,
+                  ## Pass in options to bwplot() 
+                  scales = list(y = list(relation="free"),
+                                x = list()),
+                  #auto.key = list(columns = 3), 
+                  xlim=c("CP 3","CP 4","CP 5","CP 6"),
+                  labels = c("Changepoint", "psig"))
+
+grid.arrange(h5, b5, nrow = 1)
+
+```
+
+#### Outlet Temperature
+```{r Outlet_Temp_Analytics_C4_6, dev='png', echo=FALSE, fig.align = "center", fig.height=5.5, fig.width=11, out.width="110%"}
+transparentTheme(trans = .8)
+h6 <- featurePlot(x = FP6_Outlet_Temperature_Source_Melt_0_60[,-c(1,2,3)],
+                  y = FP6_Outlet_Temperature_Source_Melt_0_60$Changes,
+                  plot = "density", 
+                  scales = list(x = list(relation="free"),
+                                y = list(relation="free")), 
+                  adjust = 1.5, 
+                  pch = "|",
+                  auto.key = list(columns = 4), 
+                  labels = c("C", "Density"))
+
+
+b6 <- featurePlot(x = FP6_Outlet_Temperature_Source_Melt_0_60[, -c(1,2,3)], 
+                  y = FP6_Outlet_Temperature_Source_Melt_0_60$Changes, 
+                  plot = "box", 
+                  col = FP6_Outlet_Temperature_Source_Melt_0_60$Changes,
+                  ## Pass in options to bwplot() 
+                  scales = list(y = list(relation="free"),
+                                x = list()),
+                  #auto.key = list(columns = 3), 
+                  xlim=c("CP 3","CP 4","CP 5","CP 6"),
+                  labels = c("Changepoint", "C"))
+
+grid.arrange(h6, b6, nrow = 1)
+
+```
+
+#### Product to Filter Press Pressure
+```{r Prod_Filt_Press_Analytics_C4_6, dev='png', echo=FALSE, fig.align = "center", fig.height=5.5, fig.width=11, out.width="110%"}
+transparentTheme(trans = .8)
+h7 <- featurePlot(x = FP6_Product_FP_Pressure_Source_Melt_0_60[,-c(1,2,3)],
+                  y = FP6_Product_FP_Pressure_Source_Melt_0_60$Changes,
+                  plot = "density", 
+                  scales = list(x = list(relation="free"),
+                                y = list(relation="free")), 
+                  adjust = 1.5, 
+                  pch = "|",
+                  auto.key = list(columns = 4), 
+                  labels = c("psig", "Density"))
+
+
+b7 <- featurePlot(x = FP6_Product_FP_Pressure_Source_Melt_0_60[, -c(1,2,3)], 
+                  y = FP6_Product_FP_Pressure_Source_Melt_0_60$Changes, 
+                  plot = "box", 
+                  col = FP6_Product_FP_Pressure_Source_Melt_0_60$Changes,
+                  ## Pass in options to bwplot() 
+                  scales = list(y = list(relation="free"),
+                                x = list()),
+                  #auto.key = list(columns = 3), 
+                  xlim=c("CP 3","CP 4","CP 5","CP 6"),
+                  labels = c("Changepoint", "psig"))
+
+grid.arrange(h7, b7, nrow = 1)
+
+```
+
+#### Differential Pressure
+```{r Diff_Press_Analytics_C4_6, dev='png', echo=FALSE, fig.align = "center", fig.height=5.5, fig.width=11, out.width="110%"}
+transparentTheme(trans = .8)
+h8 <- featurePlot(x = FP6_DP_Control_Source_Melt_0_60[,-c(1,2,3)],
+                  y = FP6_DP_Control_Source_Melt_0_60$Changes,
+                  plot = "density", 
+                  scales = list(x = list(relation="free"),
+                                y = list(relation="free")), 
+                  adjust = 1.5, 
+                  pch = "|",
+                  auto.key = list(columns = 4), 
+                  labels = c("psid", "Density"))
+
+
+b8 <- featurePlot(x = FP6_DP_Control_Source_Melt_0_60[, -c(1,2,3)], 
+                  y = FP6_DP_Control_Source_Melt_0_60$Changes, 
+                  plot = "box", 
+                  col = FP6_DP_Control_Source_Melt_0_60$Changes,
+                  ## Pass in options to bwplot() 
+                  scales = list(y = list(relation="free"),
+                                x = list()),
+                  #auto.key = list(columns = 3), 
+                  xlim=c("CP 3","CP 4","CP 5","CP 6"),
+                  labels = c("Changepoint", "psid"))
+
+grid.arrange(h8, b8, nrow = 1)
+
+```
+
+### Correlation Plot on last 4 Changepoints {.tabset .tabset-fade .tabset-pills}
+
+```{r Scatter Plot, dev='png', echo=FALSE}
+# Dataset for 6 min
+Cont_Data_6min_C4_6 <- data.frame(FP006_DP_Control_Source$Lot_Number,
+                                  FP006_DP_Control_Source$Filt_Start,
+                                  FP006_DP_Control_Source$Changes,
+                                  FP006_DP_Control_Source$`6`,
+                                  FP006_Feed_Pump_P050_Source$`6`,
+                                  FP006_Flow_Control_Source$`6`,
+                                  FP006_Out_Turbidity_Source$`6`,
+                                  FP006_Inlet_Temperature_Source$`6`,
+                                  FP006_Outlet_Temperature_Source$`6`,
+                                  FP006_Inlet_Pressure_Source$`6`,
+                                  FP006_Filtrate_Pressure_Source$`6`,
+                                  FP006_Product_FP_Pressure_Source$`6`,
+                                  FP006_DP_Control_Source$Total_Rec_Filt_min)
+
+colnames(Cont_Data_6min_C4_6) <- c("Lot_Number", "Start_Time",
+                                   "Changes",
+                                   "DP_Control",
+                                   "Feed_Pump", "Flow_Control",
+                                   "Out_Turbidity", "Inlet_Temp",
+                                   "Out_Temp", "Inlet_Press",
+                                   "Filt_Press", "Prod_Filt_Press",
+                                   "Total_Filt_Time")
+
+# Filter changes 4 to 6
+#Cont_Data_6min_C4_6 <- Cont_Data_6min_C4_6 %>%
+#  filter(as.numeric(Cont_Data_6min_C4_6$Changes)>3)
+  
+#Cont_Data_6min_C4_6$Changes <- as.numeric(Cont_Data_6min_C4_6$Changes)
+#Cont_Data_6min_C4_6$Changes <- as.factor(Cont_Data_6min_C4_6$Changes)
+
+Cont_Data_6min_C4_6 <- Cont_Data_6min_C4_6 %>%
+  filter(Cont_Data_6min_C4_6$Feed_Pump>0)
+
+# Proceed to center and scale dataset
+
+Cont_Data_6min_C4_6_Scaled <- scale(Cont_Data_6min_C4_6[,-c(1:3)],
+                                     center = TRUE, scale = TRUE)
+Cont_Data_6min_C4_6_Scaled <- data.frame(Cont_Data_6min_C4_6_Scaled,
+                                          Cont_Data_6min_C4_6[,c(1:3)])
+
+Cont_Data_6min_C4_6_Scaled <- Cont_Data_6min_C4_6_Scaled[,c(11:13,1:10)]
+
+
+# dataset for 12 min
+Cont_Data_12min_C4_6 <- data.frame(FP006_DP_Control_Source$Lot_Number,
+                                  FP006_DP_Control_Source$Filt_Start,
+                                  FP006_DP_Control_Source$Changes,
+                                  FP006_DP_Control_Source$`12`,
+                                  FP006_Feed_Pump_P050_Source$`12`,
+                                  FP006_Flow_Control_Source$`12`,
+                                  FP006_Out_Turbidity_Source$`12`,
+                                  FP006_Inlet_Temperature_Source$`12`,
+                                  FP006_Outlet_Temperature_Source$`12`,
+                                  FP006_Inlet_Pressure_Source$`12`,
+                                  FP006_Filtrate_Pressure_Source$`12`,
+                                  FP006_Product_FP_Pressure_Source$`12`,
+                                  FP006_DP_Control_Source$Total_Rec_Filt_min)
+
+colnames(Cont_Data_12min_C4_6) <- c("Lot_Number", "Start_Time",
+                                   "Changes",
+                                   "DP_Control",
+                                   "Feed_Pump", "Flow_Control",
+                                   "Out_Turbidity", "Inlet_Temp",
+                                   "Out_Temp", "Inlet_Press",
+                                   "Filt_Press", "Prod_Filt_Press",
+                                   "Total_Filt_Time")
+
+
+Cont_Data_12min_C4_6 <- Cont_Data_12min_C4_6 %>%
+  filter(Cont_Data_12min_C4_6$Feed_Pump>0)
+
+# Scale Data
+Cont_Data_12min_C4_6_Scaled <- scale(Cont_Data_12min_C4_6[,-c(1:3)],
+                                     center = TRUE, scale = TRUE)
+Cont_Data_12min_C4_6_Scaled <- data.frame(Cont_Data_12min_C4_6_Scaled,
+                                          Cont_Data_12min_C4_6[,c(1:3)])
+
+Cont_Data_12min_C4_6_Scaled <- Cont_Data_12min_C4_6_Scaled[,c(11:13,1:10)]
+
+# Dataset for 90 min
+Cont_Data_90min_C4_6 <- data.frame(FP006_DP_Control_Source$Lot_Number,
+                                   FP006_DP_Control_Source$Filt_Start,
+                                   FP006_DP_Control_Source$Changes,
+                                   FP006_DP_Control_Source$`90`,
+                                   FP006_Feed_Pump_P050_Source$`90`,
+                                   FP006_Flow_Control_Source$`90`,
+                                   FP006_Out_Turbidity_Source$`90`,
+                                   FP006_Inlet_Temperature_Source$`90`,
+                                   FP006_Outlet_Temperature_Source$`90`,
+                                   FP006_Inlet_Pressure_Source$`90`,
+                                   FP006_Filtrate_Pressure_Source$`90`,
+                                   FP006_Product_FP_Pressure_Source$`90`,
+                                   FP006_DP_Control_Source$Total_Rec_Filt_min)
+
+colnames(Cont_Data_90min_C4_6) <- c("Lot_Number", "Start_Time",
+                                    "Changes",
+                                    "DP_Control",
+                                    "Feed_Pump", "Flow_Control",
+                                    "Out_Turbidity", "Inlet_Temp",
+                                    "Out_Temp", "Inlet_Press",
+                                    "Filt_Press", "Prod_Filt_Press",
+                                    "Total_Filt_Time")
+
+Cont_Data_90min_C4_6 <- Cont_Data_90min_C4_6 %>%
+  filter(Cont_Data_90min_C4_6$Feed_Pump>0)
+
+# Scale Data
+Cont_Data_90min_C4_6_Scaled <- scale(Cont_Data_90min_C4_6[,-c(1:3)],
+                                     center = TRUE, scale = TRUE)
+Cont_Data_90min_C4_6_Scaled <- data.frame(Cont_Data_90min_C4_6_Scaled,
+                                          Cont_Data_90min_C4_6[,c(1:3)])
+
+Cont_Data_90min_C4_6_Scaled <- Cont_Data_90min_C4_6_Scaled[,c(11:13,1:10)]
+
+
+```
+
+Here I proceed to create correlation plots on selected minutes into Recirculation & Filtration.
+
+**NOTE: Due that features are in different units, I proceed to center & scale data prior analyzing it**
+
+#### Correlation Plot at 6 minutes in Recirculation
+
+```{r Corr_Plot 1, dev='png', echo=FALSE, fig.align = "center", fig.height=9, fig.width=14, out.width="110%"}
+
+Cont_Data_12min_C4_6_Scaled %>%
+  GGally::ggpairs(columns = 4:13,
+                  title = "Correlation Plot (Scaled) - 6 minutes Recirculation",
+                  ggplot2::aes(colour=Cont_Data_12min_C4_6_Scaled$Changes))
+
+#install.packages("remotes")
+#remotes::install_github("tidyverts/tsibblestats")
+
+```
+
+
+#### Correlation Plot at 12 minutes in Recirculation
+
+```{r Corr_Plot 2, dev='png', echo=FALSE, fig.align = "center", fig.height=9, fig.width=14, out.width="110%"}
+
+Cont_Data_12min_C4_6_Scaled %>%
+  GGally::ggpairs(columns = 4:13,
+                  title = "Correlation Plot (Scaled) - 12 minutes Recirculation",
+                  ggplot2::aes(colour=Cont_Data_12min_C4_6_Scaled$Changes))
+
+```
+
+
+#### Correlation Plot at 90 minutes in Recirculation + Filtration
+
+```{r Corr_Plot 3, dev='png', echo=FALSE, fig.align = "center", fig.height=9, fig.width=14, out.width="110%"}
+
+Cont_Data_90min_C4_6_Scaled %>%
+  GGally::ggpairs(columns = 4:13,
+                  title = "Correlation Plot (Scaled) - 90 minutes Recirculation",
+                  ggplot2::aes(colour=Cont_Data_90min_C4_6_Scaled$Changes))
+
+
+```
+
+
+# FP006 Extended Filtration Time - Key Takeaways
+
+1. Based on *Breakpoint Analysis*, Source lots show 4 changepoints while Recovery lots show 1 changepoint during all 2019 and early 2020.  
+  
+2. Meanwhile, *Mean Changepoint Analysis*, show 6 changepoints for Source lots and 5 changepoints for Recovery lots during same period of time.  
+  
+3. Breakpoint for Recovery lots aligns to *Fr 2+3 EtoH @ 25%* project implementation.  
+  
+4. Seasonal Analysis for Source lots show a **an upper trend cycle time performance after April 2019, increasing significally after approx. November 2019.**  
+  
+5. Mean and Median show a good data distribution representation for each continuous parameter during *mean changepoint 3 to 6.*  
+  
+6. Recirculation analysis show clear clusters between **mean changepoints 4,5 and 6 against changepoint 3** for first 6 and 12 minutes of recirculation. Additional boxplot analysis on all 60 minutes of recirculation grouped by *mean changepoint* also visualize clear median change.  
+  
+7. Correlation analysis between features (instruments) and output variable (total filtration time) show a non significant correlation for the first 6 and 12 minutes (r<0.3) of recirculation but a stronger (and negative) correlation during the 90th minute of filtration with higher $r$ value specially during **mean change 4 and 6**.  
+  
+  
+  
+**Based on analysis and key takeaways above, I'd recommend the following:**
+
+1. Evaluate CIP cycles to determinate if instrument readings are similar during filtration than during CIP runs.  
+
+2. Evaluate Mean Changepoints instead of just Breakpoints for a better understanding of process variation since from correlation analysis above, we can clearly see that equipment behaves different on each mean changepoint.  
+  
+3. Include Aerosil & Celpure suspension time into model and evaluate relationship between features.
+
+
+```{r, include=FALSE}
+options(tinytex.verbose = TRUE)
+```

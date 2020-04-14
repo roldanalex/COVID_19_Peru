@@ -1,0 +1,33 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1586829484415.000,
+    "dirty" : false,
+    "encoding" : "",
+    "folds" : "",
+    "hash" : "0",
+    "id" : "E7272858",
+    "lastKnownWriteTime" : 1310830429848,
+    "last_content_update" : 1586829484415,
+    "path" : null,
+    "project_path" : null,
+    "properties" : {
+        "cacheKey" : "3C97D28",
+        "caption" : "COVID_19_Peru_Raw",
+        "contentUrl" : "grid_resource/gridviewer.html?env=&obj=COVID_19_Peru_Raw&cache_key=3C97D28",
+        "displayedObservations" : 39,
+        "environment" : "",
+        "expression" : "COVID_19_Peru_Raw",
+        "object" : "COVID_19_Peru_Raw",
+        "preview" : 0,
+        "totalObservations" : 39,
+        "variables" : 10
+    },
+    "read_only" : false,
+    "read_only_alternatives" : [
+    ],
+    "relative_order" : 4,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_dataframe"
+}
