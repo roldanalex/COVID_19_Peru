@@ -3,6 +3,8 @@ title: "COVID-19 Outbreak Spread Analytics - Peru"
 author: "Created by: Alexis Roldan"
 date: "Updated On: `r format(Sys.Date(),'%d%b%y')`"
 always_allow_html: yes
+twitter:
+  creator: "@wizard2416"
 output:
   rmdformats::readthedown:
     highlight: kate
@@ -67,18 +69,56 @@ h4 {
 
 **Before we begin please note anything bolded is either a finding or an important comment**
 
+# Introduction
 
-# Business Understanding
+This blog illustrates the use of R to analyze COVID-19 Outbreak in Peru by applying different algorithms in an attempt to gauge the spread of the virus and success of public health containment efforts in reducing the speed and degree of spread.
+
+For this analysis, I'm laboring [Tim Churche's blog](https://timchurches.github.io/blog/posts/2020-02-18-analysing-covid-19-2019-ncov-outbreak-data-with-r-part-1/) which containings a detailed analysis of COVID-19 data for China.
+
+This analysis is for **informational purposes only** and should not be relied upon for to inform governmental or health care policy.
+
+# Data sources
+
+Data utilized for this analysis comes from [Coronavirus wiki](https://en.wikipedia.org/wiki/Timeline_of_the_2019–20_Wuhan_coronavirus_outbreak), Peruvian Ministry of Health [MINSA](https://www.gob.pe/minsa/), [Outbreak Dashboard](https://chschoenenberger.shinyapps.io/covid19_dashboard/) and [nCOV19 package](https://github.com/GuangchuangYu/nCov2019). The use of these pages through web scraping can be challenging, however, because the format of the tables in which the data appears changes many times per day. 
+
+## Data limitations
+
+The biggest problem with these analyses is that they are **not** based on data tabulated by **date of onset** (of symptoms), but rather on data tabulated by **date of reporting**, or perhaps date of confirmation by lab test. We understand that **lab results from molecular tests can take up to 7 days to be published** while **lab results from serological tests are not reliable due that test looks for antibodies within the blood stream which are usually developed from 7 to 30 days after contracting the virus**.
+
+If lab testing and reporting is swift and the lag is uniform, then the date of reporting or confirmation will lag consistently and only slightly behind the date of onset. Sadly that's not usually the case, there are tipacally variable delays in lab confirmation and/or reporting, leading to backlogs of cases being reported all at once (known as a "data dump" by outbreak epidemiologists). This is very unfortunate, and it frustrates efforts to properly assess outbreak trajectories and effectiveness of intervention strategies. One solution would be for authorities to provide line-listings of all cases, including their date of reporting **and** their date of onset of symptoms, even if only presumptive dates are provided (and missing dates of onset can be imputed, in any case).
+
+The effect of the unavoidable (because that's all that is available) use of data tabulated by date of reporting here (and just about everywhere else) means that reproduction numbers and related measures of infectiousness may be inflated, particularly at first. Nonetheless, the methods illustrated here show the potential utility of epidemic trajectory analysis -- but that utility would be **so much greater** if health authorities published data tabulated by date of onset, or better, line-listings that include date of onset. It would be very easy for them to do that.
+
+## Data Update
 
 This initial analysis is meant to visualize and forecast **COVID-19 spread in Peru**.
 
-**Peru COVID-19 dataset updated on:** `r format(Sys.Date(),'%d%b%y')`
+**Peru COVID-19 dataset was updated on:** `r format(Sys.Date(),'%d%b%y')`
 
+# Analysis methods
+
+The analysis presented here primarily uses R packages developed and published by the [**R Epidemics Consortium**](https://www.repidemicsconsortium.org) (RECON).
+
+The functions provided by the **RECON**  [`incidence`](https://www.repidemicsconsortium.org/incidence/) package are used to fit log-linear models to the growth and decay phases of the outbreak in Peru, and the decay phase model is used to very approximately predict when local transmission will be extinguished there. 
+
+I also utilize [`earlyR`](https://www.repidemicsconsortium.org/earlyR/) and `EpiEstim` packages, which are also published by **RECON**. In particular the `get_R()` function in `earlyR` calculates a maximum-likelihood estimate (from a distribution of likelihoods for the reproduction number) as well as calculating $\lambda$, which is a relative measure of the current "force of infection":
+
+$$ \lambda = \sum_{s=1}^{t-1} {y_{s} w (t - s)} $$
+
+
+where $w()$ is the probability mass function (PMF) of the serial interval, and $y_s$ is the incidence at time $s$.
+
+The resulting $\lambda$ "force of infection" plot indicates the daily effective infectiousness (subject to public health controls), with a projection of the diminution of the force of infection if no further cases are observed. The last date of observed data is indicated by the vertical blue dashed line. New cases are shown in a cumulative manner as black dots. It is a sign that the outbreak is being brought under control if $\lambda$, as indicated by the orange bars, is falling prior to or at the date of last observation (as indicated by the vertical blue line). Note that left of the vertical blue line the $\lambda$ values are projections, valid only in **no further cases are observed**. As such, the plot is a bit confusing, but it is nonetheless useful if interpreted with this explanation in mind. The **RECON** packages are all open-source, and easier-to-interpret plots of $\lambda$ could readily be constructed.
+
+The critical parameter for these calculation is the distribution of _serial intervals_ (SI), which is the time between the date of onset of symptoms for a case and the dates of onsets for any secondary cases that case gives rise to. Typically a discrete $\gamma$ distribution for these _serial intervals_ is assumed, parameterised by a mean and standard deviation, although more complex distributions are probably more realistic. 
+
+For the estimation of the force of infection $\lambda$, for the _serial interval_ we'll use a discrete $\gamma$ distribution with a mean of 5.0 days and a standard deviation of 3.4.
+
+----
 
 # Data Understanding
 
 After having an understanding on what is our business problem, __initial datasets__ are loaded for data preparation and exploration prior model development.
-
 
 ## Libraries & Functions
 
@@ -86,12 +126,13 @@ Let's begin by loading the libraries and functions that will be used for this an
 
 ```{r Libraries, echo=FALSE}
 
-load.libraries <- c('plyr', 'dplyr','data.table', 'readxl',
-                    'stringr', 'stringi','forecast', 'tidyverse',
-                    'caret','zoo','plotly','DT','rpart','tidyr',
-                    'inspectdf','DataExplorer','ggplot2','tsoutliers',
-                    'dlm','PerformanceAnalytics',
-                    'ggdendro','rgdal','tsibble', 'EpiEstim')
+load.libraries <- c('plyr', 'dplyr','data.table', 'readxl', 'tibble','deSolve',
+                    'stringr', 'stringi','forecast', 'tidyverse', 'broom','gt',
+                    'caret','zoo','plotly','DT','rpart','tidyr', 'rvest', 'hrbrthemes',
+                    'inspectdf','DataExplorer','ggplot2','tsoutliers', 'ggthemes',
+                    'dlm','PerformanceAnalytics', 'projections', 'earlyR', 
+                    'ggdendro','rgdal','tsibble', 'EpiEstim','epitrix',
+                    'distcrete','shadowtext','nCov2019','magrittr','incidence')
 
 install.lib <- load.libraries[!load.libraries %in% installed.packages()]
 for(libs in install.lib) install.packages(libs, dependences = TRUE)
@@ -101,6 +142,9 @@ library("corrplot")
 library("RColorBrewer")
 library(lubridate)
 library(deSolve)
+library(projections)
+library(shadowtext)
+
 ```
 
 
@@ -117,12 +161,113 @@ load("rda/COVID_19_Peru_Raw.rda")
 
 load("rda/COVID_19_Peru_Raw_Inc2day.rda")
 
+w <- load_nCov2019(lang = 'en')
+
 ```
 
-**Data Summary**
+## Summary
 
 The COVID-19 dataset (COVID_19_Peru_Raw) has `r dim(COVID_19_Peru_Raw)[1]` rows and `r dim(COVID_19_Peru_Raw)[2]` columns while COVID-19 dataset case increase every 2 days has `r dim(COVID_19_Peru_Raw_Inc2day)[1]` rows and `r dim(COVID_19_Peru_Raw_Inc2day)[2]` columns
   
+# Worldwide Analytics
+
+Please see below for **COVID-19 Outbreak Worldwide Analytics** updated on `r format(max(w['global']$time),'%d%b%y')`.
+
+## Outbreak trend since 100th cases
+
+Here we observe Worldwide Outbreak trend after the 100th reported possitive case: 
+
+```{r Worldwide Analytics, message=FALSE, warning=FALSE, tidy=TRUE, echo=FALSE}
+
+library(ggplot2)
+
+ww <- w['global'] %>% 
+  as_tibble %>%
+  rename(possitive_cased_confirmed = cum_confirm) %>%
+  filter(possitive_cased_confirmed > 100 & !country == 'China') %>%
+  group_by(country) %>%
+  mutate(days_since_100th_case = as.numeric(time - min(time))) %>%
+  ungroup 
+  
+breaks=c(100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000)
+
+p <- ggplot(ww, aes(days_since_100th_case, possitive_cased_confirmed, color = country)) +
+  geom_smooth(method='lm', aes(group=1),
+              data = . %>% filter(!country %in% c("Japan", "Singapore")), 
+              color='grey10', linetype='dashed') +
+  geom_line(size = 0.8) +
+  geom_point(pch = 21, size = 1) +
+  scale_y_log10(expand = expand_scale(add = c(0,0.1)), 
+                breaks = breaks, labels = breaks) +
+  scale_x_continuous(expand = expand_scale(add = c(0,1))) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "none",
+    plot.margin = ggplot2::margin(3,15,3,3,"mm")
+  ) +
+  coord_cartesian(clip = "off") +
+  geom_shadowtext(aes(label = paste0(" ",country)), hjust=0, vjust = 0, 
+                  data = . %>% group_by(country) %>% top_n(1, days_since_100th_case), 
+                  bg.color = "white") +
+  labs(x = "Number of days since 100th case", y = "", 
+       title = "Daily possitive cases Worldwide")
+
+ggplotly(p)
+
+```
+
+## Geographic Cumulative Cases
+
+Below we find a geographic heatmap based on possitive confirmed cases up to date:
+
+```{r Geomap, message=FALSE, warning=FALSE, tidy=TRUE, echo=FALSE}
+
+library('maps')
+plot(w, palette = 'Blues')
+
+
+```
+
+## Epidemic Heatmap for top 25 countries on the last 7 days
+
+Heatmap of epidemic situation around the world in the last 7 days (log scale) for top 25 countries with higher number of possitive cases.
+
+
+```{r Epidemic Heatmap, message=FALSE, warning=FALSE, tidy=TRUE, echo=FALSE}
+
+df <- w['global']
+d <- subset(df,time == time(w))
+t10 <- d[order(d$cum_confirm,decreasing = T),]$country[1:25]
+df <- df[which(df$country %in% t10),]  
+
+d<-df
+max_time <- max(d$time)
+min_time <- max_time - 7
+
+d <- na.omit(d[d$time >= min_time & d$time <= max_time,])
+
+dd <- d[d$time == max(d$time, na.rm = TRUE),]
+
+d$country <- factor(d$country, 
+  levels=unique(dd$country[order(dd$cum_confirm)]))
+
+breaks = c(10, 100, 1000, 10000)
+
+p<-ggplot(d, aes(time, country)) + 
+  geom_tile(aes(fill = cum_confirm), color = 'black') + 
+  scale_fill_viridis_c(trans = 'log', breaks = breaks, 
+  labels = breaks) + 
+  xlab(NULL) + ylab(NULL) +
+  scale_x_date(date_labels = "%Y-%m-%d") +
+  ggtitle("Daily cumulatve cases for last 7 days in log scale (Top 25 countries)") + 
+  theme_minimal()
+
+ggplotly(p)
+
+```
+
+# Peru Analytics
 
 ## Exploratory Data Analysis (EDA)
 
@@ -218,7 +363,9 @@ c <- Peru_Daily_Incident %>%
 ggplotly(c)
 
 x <- COVID_19_Peru_Raw %>%
-  ggplot(aes(x=Date, y=increase_index_case_percent_Peru))  + # geom_point() + geom_line() +
+  ggplot(aes(x=Date, y=increase_index_case_percent_Peru,
+             text = paste('Date: ', Date,
+                          '<br>Percentage (%):', round(increase_index_case_percent_Peru*100,1))))  + # geom_point() + geom_line() +
     geom_bar(stat="identity", 
              fill = ifelse(COVID_19_Peru_Raw$increase_index_case_percent_Peru < 0, "darkred",
                                             "darkblue")) + 
@@ -229,20 +376,23 @@ x <- COVID_19_Peru_Raw %>%
           strip.text.y = element_text(size=11)) + theme_bw() +
   scale_y_continuous(labels = scales::percent)
 
-ggplotly(x)
+ggplotly(x,tooltip = c("text"))
 
 z <- COVID_19_Peru_Raw_Inc2day %>%
-  ggplot(aes(x=Date, y=percent_cases_increase_2_days))  + 
-  geom_point(color = "darkblue") + geom_line() +
-    #geom_bar(stat="identity", fill = "darkblue") + 
+  ggplot(aes(x = Date, 
+             y = percent_cases_increase_2_days,
+             text = paste('Date: ', Date,
+                          '<br>Percentage (%):', round(percent_cases_increase_2_days*100,1)))) +
+  # geom_line()  + geom_line() +
+    geom_bar(stat="identity", fill = "darkblue") + 
     scale_x_date(date_breaks="7 days", date_labels = "%d %b") +
     labs(y="Incremental incidence every 2 days",
          title="Percentage of Lab-confirmed possitive cases of COVID-19 in Peru every 2 days")  +
     theme(legend.position = "none", 
           strip.text.y = element_text(size=11)) + theme_bw() +
-  scale_y_continuous(labels = scales::percent)
+  scale_y_continuous(labels = scales::percent) 
 
-ggplotly(z)
+ggplotly(z, tooltip = c("text"))
 
 
 ```
@@ -304,18 +454,40 @@ e <- COVID_19_Peru_Raw %>%
 
 ggplotly(e)
 
+# y <- COVID_19_Peru_Raw %>%
+#   # mutate(colorbars = ifelse(COVID_19_Peru_Raw$`increase_index_death_percent)Peru` > 0, 
+#                             # "darkred", "darkblue")) %>%
+#   ggplot(aes(x=Date, 
+#              y=`increase_index_death_percent)Peru`,
+#              text = paste('Date: ', Date,
+#                           '<br>Percentage (%):', round(`increase_index_death_percent)Peru`*100,1)))) +
+#   geom_bar(stat="identity", 
+#            fill = ifelse(COVID_19_Peru_Raw$`increase_index_death_percent)Peru` < 0, "darkred",
+#                          "darkblue")) + 
+#   theme_bw() +
+#   scale_x_date(date_breaks="7 days", date_labels = "%d %b") +
+#   labs(y="% Index of deaths per day",
+#        title="Percentage Index for Death Lab-confirmed possitive cases of COVID-19 in Peru")  +
+#   theme(legend.position = "none") +
+#   scale_y_continuous(labels = scales::percent)
+
+
 y <- COVID_19_Peru_Raw %>%
-  mutate(colorbars = ifelse(COVID_19_Peru_Raw$`increase_index_death_percent)Peru` > 0, 
-                            "darkred", "darkblue")) %>%
-  ggplot(aes(x=Date, y=`increase_index_death_percent)Peru`, fill = colorbars)) +
-  geom_bar(stat="identity") + theme_bw() +
-  scale_x_date(date_breaks="7 days", date_labels = "%d %b") +
-  labs(y="% Index of deaths per day",
-       title="Percentage Index for Death Lab-confirmed possitive cases of COVID-19 in Peru")  +
-  theme(legend.position = "none") +
+  ggplot(aes(x=Date, y=`increase_index_death_percent)Peru`,
+             fill = ifelse(`increase_index_death_percent)Peru` < 0, "darkred",
+                         "darkblue"),
+             text = paste('Date: ', Date,
+                          '<br>Percentage (%):', round(`increase_index_death_percent)Peru`*100,1)))) +
+    geom_bar(stat="identity") + 
+    scale_x_date(date_breaks="7 days", date_labels = "%d %b") +
+    labs(y="% Index of possitive cases per day",
+         title="Percentage Index for Lab-confirmed possitive cases of COVID-19 in Peru")  +
+    theme_bw() +
+    theme(legend.position = "none", 
+          strip.text.y = element_text(size=11))  +
   scale_y_continuous(labels = scales::percent)
 
-ggplotly(y)
+ggplotly(y, tooltip = c("text"))
 ```
 
 Clearly daily counts of deaths are continuing to rise despite the fact that the daily count of new cases is now falling. This is not surprising, given that it takes some time for cases to either recover or to die, and therefore the trend in deaths will necessarily lag behind any trend in daily incidence.
@@ -421,7 +593,7 @@ Opt_par
 
 Those values don't mean a lot, _per se_, but let's use them to get the fitted numbers of people in each compartment of our SIR model for the dates up to `r format(Sys.Date(),'%d%b%y')` that were used to fit the model, and compare those fitted values with the observed data.
 
-```{r SIR_model_plot_fitted_data, echo=TRUE, tidy=TRUE, message=FALSE}
+```{r SIR_model_plot_fitted_data, echo=FALSE, tidy=TRUE, message=FALSE}
 # time in days for predictions, I will use 60 days forecast
 t <- 1:as.integer(today()+60 - ymd(sir_start_date)) 
 # get the fitted values from our SIR model
@@ -670,7 +842,7 @@ plot(Peru_incidence_object) +
 
 ```
 
-Now I proceed to fit two log-linear models, one to the growth phase before the peak, and one to the decay phase after the peak. We can plot the fitted values from our models (with confidence limits) on top of the actual observed possitive incidence data for Peru.
+Now I proceed to fit a log-linear model for the growth phase before the peak. I can plot the fitted values from our model (with confidence limits) on top of the actual observed possitive incidence data for Peru.
 
 ```{r fit_incidence_object, echo=FALSE, tidy=TRUE, message=FALSE, warning=FALSE, preview=TRUE}
 
@@ -688,6 +860,88 @@ plot(Peru_incidence_object) %>%
   theme_bw()
 ```
 
+And here I will evaluate **force-of-infection λ plot**
+
+```{r, echo=FALSE}
+si_mean <- 5.0
+si_sd <- 3.4
+alt_si_mean <- 7.5
+alt_si_sd <- 3.4
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+provincia <- "Peru_cases_increase"
+last_date <- ymd(Sys.Date())
+
+prefectural_earlyR <- function(df, provincia, last_date, si_mean, si_sd) {
+  Peru_Cumulative_Incidence %>%
+  filter(Date <= last_date,
+         !is.na(incident_cases),
+         province == provincia) %>%
+  select(Date, incident_cases) %>%
+  uncount(incident_cases) %>%
+  pull(Date) -> local_case_dates
+  local_case_dates %>%
+  incidence(., last_date=last_date) -> local_cases
+  
+  res <- get_R(local_cases, si_mean =si_mean, si_sd = si_sd)
+  res$local_case_dates <- local_case_dates
+  res$provincia <- provincia
+  res$last_date <- last_date
+  res$si_mean <- si_mean
+  res$si_sd <- si_sd
+  return(res)
+}
+
+prefecture_plot_lambda <- function(res) {
+  plot(res, "lambdas", scale = length(res$local_case_dates) + 1,
+       bty="n")
+  title(sub=paste("\nEstimated", expression(lambda), "for", 
+                            res$provincia,  
+                            "(assuming serial interval mean =",
+                            res$si_mean, 
+                            ", sd =", 
+                            res$si_sd, ")"))
+  abline(v = res$local_case_dates, lwd = 3, col = "grey")
+  abline(v = res$last_date, col = "blue", lty = 2, lwd = 2)
+  points(res$local_case_dates, seq_along(res$local_case_dates), pch = 20, cex = 3)
+}
+
+lambda_plot_j <- function(provincia) {
+  res_obj <- prefectural_earlyR(japanese_prefectures_confirmed, 
+                                provincia,
+                                last_date,
+                              si_mean,
+                              si_sd)
+  prefecture_plot_lambda(res_obj)
+}
+
+lambda_plot_j(provincia)
+
+```
+
+
+```{r  incidence_object_refit_stats, echo=FALSE, tidy=TRUE, message=FALSE, warning=FALSE, layout="l-body-outset"}
+growth_model_fit_stats <- glance(Peru_incidence_fit$model) %>%
+                          mutate(Dates="all") %>%
+                          select(Dates, r.squared, adj.r.squared, deviance)
+
+end_date <- Sys.Date()
+
+growth_model_fit_stats %>%
+  gt() %>%
+  tab_header(title = md("**Model Fitted Statistics**"),
+             subtitle = glue::glue("Last update on: {end_date}")) %>%
+  fmt_number(columns=2:4, decimals = 2) %>%
+  cols_label(Dates = md("**Dates**"),
+             r.squared = md("**R2**"),
+             adj.r.squared = md("**Adj. R2**"),
+             deviance = md("**Deviance**") )
+
+
+
+```
 
 From the model, we can extract various parameters of interest: the **growth rate prior to the peak was `r format(incidence::get_info(Peru_incidence_fit, "r")[1],digits=2,nsmall=2)`** (95% CI `r format(incidence::get_info(Peru_incidence_fit, "r.conf")[1,1],digits=2,nsmall=2)` - `r format(incidence::get_info(Peru_incidence_fit, "r.conf")[1,2],digits=2,nsmall=2)`).
 
@@ -695,21 +949,41 @@ This growth rates is equivalent to a **doubling time of `r format(incidence::get
 
 The doubling time estimate is quite ilustrative on informing current public health intervention policy in Peru. 
 
+**Assessment**: Outbreak in Peru is not in control yet and may still growth if public health policies are not followed.
+
+## Estimating the reproduction number from log-linear models
+
+Based on log-linear model of the epidemic trajectory I'm able to estimate the reproduction number in the growth phase of the epidemic. I need to provide a distribution for the _serial interval_ time, which is the time between the onset of a primary case and the time of onset in its secondary cases. I'll use a mean of 7.5 days and a standard deviation of 3.4 days to parameterise a discrete gamma distribution for the serial interval based on analysis of just 5 primary cases amongst the first 450 cases in Wuhan, published by [Li _et al._](https://www.nejm.org/doi/full/10.1056/NEJMoa2001316). Here is a histogram of our calculated distribution of possible values for $R_{0}$ for the growth phase, based on the log-linear model we fitted to the Peru incidence data:
+
+```{r est_R0_growth, echo=TRUE, tidy=TRUE, message=FALSE, warning=FALSE}
+
+mu <- 7.5 # days
+sigma <- 3.4 # days
+param <- gamma_mucv2shapescale(mu, sigma / mu)
+w <- distcrete("gamma", interval = 1,
+                 shape = param$shape,
+                 scale = param$scale, w = 0)
+growth_R0 <- lm2R0_sample(Peru_incidence_fit$model, w)
+hist(growth_R0, col = "darkblue", border = "white", main = "R0 distribution in Peru")
+summary(growth_R0)
+```
+
+Note that the central estimates for $R_{0}$ are considerably higher than those we calculated with a SIR model fitted to the same Peru data, and are also higher than $R_{0}$ estimates published elsewhere, but they are consistent with estimates of the instantaneous effective reproduction number $R_{e}$ which are calculated in the next section^[They are also consistent with unpublished estimates of $R_{0}$ for the COVID-19 virus being discussed in various expert in WHO.]. 
 
 # Estimating changes in the _effective reproduction number_
 
 It would be useful to estimate the current _effective reproduction number_ $R_{e}$ on a day-by-day basis so as to track the effectiveness of public health interventions in Peru, and possibly predict at the earliest opportunity when an outbreak will turn the corner.
 
-There are several available methods for estimating $R_{e}$ -- . Here I will focus on one method, developed in 2013 by Anne Cori and colleagues at Imperial College, London, which permits estimation of the _instantaneous effective reproduction number_, which is exactly want we want in order to track the effectiveness of containment efforts. Full details are available in the [original paper](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3816335/) on the method, with extensions described in a later paper by [Thompson _et al._](https://doi.org/10.1016/j.epidem.2019.100356). I'll use the `EpiEstim` package for _R_, which implements this method, with recent extensions to permit modelling of imported cases as well as local transmission. "Imported" my be from other species, and/or due to inbound human travel from other geographical regions.  
+There are several available methods for estimating $R_{e}$ -- . Here I will focus on one method, developed in 2013 by Anne Cori and colleagues at Imperial College, London, which permits estimation of the _instantaneous effective reproduction number_, which is exactly want we want in order to track the effectiveness of containment efforts. Full details are available in the [original paper](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3816335/) on the method, with extensions described in a later paper by [Thompson _et al._](https://doi.org/10.1016/j.epidem.2019.100356). 
 
 Once again, I'll start with the counts of lab-confirmed posstive cases in Peru from 06th March 2020 onwards.
 
 ```{r Cori_model_get_data_Peru, echo=FALSE, tidy=TRUE, message=FALSE}
 Peru_confirmed_cases <- COVID_19_Peru_Raw %>%
-                          mutate(Peru_Total_Cases = ifelse(is.na(Peru_Total_Cases), 0, Peru_Total_Cases)) %>%
-                          mutate(imported=ifelse(Date == ymd("2020-03-01"), Peru_Total_Cases, 0),
-                                 local=ifelse(Date == ymd("2020-03-01"), 0, Peru_Total_Cases)) %>%
-                          select(Date, local, imported) %>%
+                          mutate(Peru_Total_Cases = ifelse(is.na(Peru_Total_Cases), 
+                                                           0, Peru_Total_Cases)) %>%
+                          mutate(I = ifelse(Date == ymd("2020-03-01"), 0, Peru_Total_Cases)) %>%
+                          select(Date, I) %>%
                           rename(dates=Date)
 ```
 
@@ -719,19 +993,31 @@ There are different models that allows uncertainty to be incorporated into the p
 
 I'm currently using one published estimate of the _serial interval_ distribution, derived from analysis of just 5 primary cases amongst the first 450 cases in Wuhan, published by [Li _et al._](https://www.nejm.org/doi/full/10.1056/NEJMoa2001316). They estimate the serial interval distribution to have a mean of 7.5 days with a standard deviation of 3.4 days. This is almost identical to the  _serial interval_ parameters for the MERS virus, which were a mean of 7.6 and a SD of 3.4. This similarity is not surprising given that both pathogens are _coronavirii_. Let's use that to estimate the instantaneous $R_{e}$ for Peru.
 
-```{r Cori_parametric_si_model_fit_Peru, echo=TRUE, tidy=TRUE, message=FALSE, warning=FALSE}
+```{r Cori_parametric_si_model_fit_Peru, echo=FALSE, tidy=TRUE, message=FALSE, warning=FALSE}
 
 plot_Ri <- function(estimate_R_obj) {
-  p_I <- plot(estimate_R_obj, "incid", add_imported_cases=TRUE) # plots the incidence
+  p_I <- plot(estimate_R_obj, "incid") # plots the incidence
   p_SI <- plot(estimate_R_obj, "SI") # plots the serial interval distribution
   p_Ri <- plot(estimate_R_obj, "R")
   return(gridExtra::grid.arrange(p_I, p_SI, p_Ri, ncol = 1))
 }
+# 
+# tryCatch(
+#   Peru_res_parametric_si <- estimate_R(Peru_confirmed_cases,
+#                                      method="parametric_si",
+#                                      config = make_config(list(
+#                                        mean_si = 7.5, 
+#                                        std_si = 3.4))),
+#   tibble_error = function(cnd) {
+#   }
+# )
+
 Peru_res_parametric_si <- estimate_R(Peru_confirmed_cases,
-                                     method="parametric_si",
-                                     config = make_config(list(
-                                       mean_si = 7.5, 
-                                       std_si = 3.4)))
+                                      method="parametric_si",
+                                      config = make_config(list(
+                                                           mean_si = 7.5, 
+                                                           std_si = 3.4)))
+
 plot_Ri(Peru_res_parametric_si)
 ```
 
@@ -741,11 +1027,11 @@ The second thing to note is that the 7-day sliding window estimates of **instant
 
 One possible explanation is that COVID-19 is transmissible **before** the onset of symptoms, resulting in much shorter serial intervals than expected, possibly shorter than the incubation period. Alternatively, and very likely, there may be non-symptomatic, sub-clinical spreaders of the disease, who are undetected. Again, the effect is as if the serial interval is very short, although it would be desirable to explicitly model that scenario, but current methods don't permit that. 
 
-To cover the possibility of some cases transmitting the disease very soon after infection, possibly before the onset of symptoms (so-called _super-spreaders_), and some cases being sub-clinical, and thus undetected, spreading the disease as well, while other cases have a serial interval more consistent with that of MERS or SARS, with a mean around 8 days, I proceed to incorporate this uncertainty around the serial interval distribution by allowing specification of a distribution of distributions of serial intervals. So let's retain the mean SI estimated by Li _et al._ of 7.5 days, with an SD of 3.4, but let's also allow that mean SI to vary between 2.3 and 8.4 using a truncated normal distribution with an SD of 2.0. We'll also allow the SD or the SD to vary between 0.5 and 4.0. 
+To cover the possibility of some cases transmitting the disease very soon after infection, possibly before the onset of symptoms (so-called _super-spreaders_), and some cases being sub-clinical, and thus undetected, spreading the disease as well, while other cases have a serial interval more consistent with that of MERS or SARS, with a mean around 8 days, I proceed to incorporate this uncertainty around the serial interval distribution by allowing specification of a distribution of distributions of serial intervals. So let's retain the mean SI estimated by Li _et al._ of 7.5 days, with an SD of 3.4, but let's also allow that mean SI to vary between 2.3 and 8.4 using a truncated normal distribution with an SD of 2.0. We'll also allow the SD or the SI to vary between 0.5 and 4.0. 
 
 Recalculating with those SI distribution parameters and meta-parameters, we get these results:
 
-```{r Cori_uncertain_si_model_fit_Peru, echo=TRUE, tidy=TRUE, message=FALSE, warning=FALSE}
+```{r Cori_uncertain_si_model_fit_Peru, echo=FALSE, tidy=TRUE, message=FALSE, warning=FALSE}
 
 Peru_res_parametric_si <- estimate_R(Peru_confirmed_cases,
                                 method="uncertain_si",
@@ -797,10 +1083,10 @@ plot_Ri(Peru_res_empirical_si)
 
 That is remarkably similar to our estimates based on an "uncertain" meta-distribution for the _serial interval_, above, which is encouraging.
 
-Nonetheless some of the $R_{e}$ values are still rather high. Remember, these are **instantaneous** _reproductive numbers_, averaged over a sliding 7-day window. Let's change that to a shorter window to see what the day-to-day changes in $R_{e}$ are, rather than based on an aggregation of the preceding 7-days. We'll plot the results using a logarithmic scale with a red reference line at 1.0, representing the _reproduction number_ below which the outbreak will start to die out.
+Nonetheless some of the $R_{e}$ values are still rather high. Remember, these are **instantaneous** _reproductive numbers_, averaged over a sliding 7-day window. Let's change that to a shorter window to see what the day-to-day changes in $R_{e}$ are, rather than based on an aggregation of the preceding 7-days. I'll plot the results using a logarithmic scale with a red reference line at 1.0, representing the _reproduction number_ below which the outbreak will start to die out.
 
 ```{r Cori_uncertain_si_model_fit_Peru_daily, echo=FALSE, tidy=TRUE, message=FALSE, warning=FALSE}
-t_start <- seq(5, length(Peru_confirmed_cases$local)-1)   
+t_start <- seq(5, length(Peru_confirmed_cases$I)-1)   
 t_end <- t_start + 1             
 
 empirical_si_config_daily <- make_config(list(si_parametric_distr = dist,
@@ -840,3 +1126,47 @@ k <- COVID_19_Peru_Raw %>%
 ggplotly(k)
 ```
 
+# Projections 
+
+After creating projections based on a simple SIR model, it is possible to use a more complex model to generate a sophisticated projection as well. 
+
+Here below I created a projection based up to `r format(get_dates(Peru_incidence_object)[(length(get_dates(Peru_incidence_object)) - 5)], "%d %B %Y")` data. Projection extends up to 14 days from last observed possitive case.
+
+```{r test_projection_Peru_growth, echo=FALSE, tidy=TRUE, message=FALSE, warning=FALSE}
+
+pred_fwd_days <- 5
+#date_range <- 1:(which(get_dates(Peru_incidence_object) == Peru_incidence_peak) - pred_fwd_days)
+date_range <- 1: (nrow(COVID_19_Peru_Raw)-pred_fwd_days)
+
+test_pred_growth <- projections::project(Peru_incidence_object[date_range],
+                            R = median(growth_R0),
+                            si = w,
+                            n_days = 19, n_sim = 1000)
+
+# convert the test_pred_growth matrix to a data frame and get the median
+# incidence for all the simulations for each date
+test_pred_growth_median_counts <- test_pred_growth %>%
+  as.data.frame() %>%
+  pivot_longer(-dates,
+               names_to="simulation",
+               values_to="incidence") %>%
+  group_by(dates) %>%
+  summarise(incident_cases=as.integer(median(incidence))) %>%
+  mutate(data_type = "projection")
+
+l <- test_pred_growth_median_counts %>%
+  bind_rows(tibble(dates=get_dates(Peru_incidence_object),
+                   incident_cases=get_counts(Peru_incidence_object),
+                   data_type="observed")) %>%
+  ggplot(aes(x=dates, y=incident_cases, colour=data_type)) +
+    geom_point() +
+    geom_line() +
+    labs(x="", y="Daily incident confirmed cases",
+         title="Observed versus growth-phase projection of incident cases in Peru") +
+         theme(legend.position="top", legend.title = element_blank()) +
+  theme_bw()
+
+ggplotly(l)
+```
+
+Based on that projection, it will take until May for the outbreak in Peru to be extinguished.
