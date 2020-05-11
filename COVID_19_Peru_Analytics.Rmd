@@ -1,6 +1,6 @@
 ---
 title: "COVID-19 Outbreak Analytics - Peru"
-author: "[Alexis Roldan](https://github.com/wizard2416)"
+author: "Alexis Roldan"
 date: "`r format(Sys.time(), '%d %B %Y')`"
 mail: "argos2416@gmail.com"
 linkedin: "alexis-roldan-ds"
@@ -8,7 +8,7 @@ twitter: "wizard2416"
 github: "wizard2416"
 logo: "peru-logo.png"
 output:
-  epuRate::epurate:
+  EpuArgs::EpuArgs:
     toc: TRUE
     number_sections: FALSE
   html_document: 
@@ -31,41 +31,6 @@ library(rgl)
 knit_hooks$set(webgl = hook_webgl)
 knitr::opts_chunk$set(cache=FALSE, message = FALSE, warning = FALSE,
                       fig.align = "center")
-```
-
-
-<!-- Ctr+Shift+C for comments, need to highlight the lines of code -->
-
-```{css style-customizations,echo=FALSE}
-h1.title {
-  font-size: 33px;
-  color: Navy;
-  font-family:"Roboto"
-}
-
-h1 {
-  font-size: 27px;
-  color: blue;
-  font-family:"Helvetica"
-  
-}
-h2 {
-  font-size: 24px;
-  color: brown;
-  font-family:"Helvetica"
-}
-
-h3 {
-  font-size: 21px;
-  color: Navy;
-  font-family:"Helvetica"
-}
-
-h4 {
-  font-size: 18px;
-  color: black;
-  font-family:"Helvetica"
-}
 ```
 
 <br><br>
@@ -285,7 +250,7 @@ ggplotly(p)
 ```
 
 # Peru Analytics
-<br>
+
 ## Exploratory Data Analysis (EDA)
 <br>
 After raw data is loaded, I proceed to perform EDA on dataset.
