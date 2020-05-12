@@ -25,6 +25,12 @@ Currently, this report uses different dataset from different packages and offici
 
 ## Analysis
 
+The focus of this report is to analyze current COVID-19 data for Peru by using molecular test only (due to low specificity for
+selogical tests) and show the forecast difference between combined test results and molecular test results.
+
+Additionally, I focus on predicting when Peru will reach the peak of infection as well as to show how many people will
+be infected by then.
+
 <img src="fig/Peru_Model1.png" style="display: block; margin: auto;" />
 
 <img src="fig/Peru_Model2.png" style="display: block; margin: auto;" />
