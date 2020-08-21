@@ -18,7 +18,8 @@ COVID_19_Peru_Raw_Inc2day <- read_excel("data/COVID19_Peru.xlsx",
 
 # create an "other province cases since there's not data for other province per day"
 COVID_19_Peru_Raw <- COVID_19_Peru_Raw %>%
-  mutate(Other_province_cases_increase = Peru_cases_increase - Lima_cases_increase)
+  mutate(Other_province_cases_increase = Peru_cases_increase - Lima_cases_increase) %>%
+  mutate(Peru_serological_total = Peru_Total_Cases-Peru_molecular_total)
   
 summary(COVID_19_Peru_Raw)
 str(COVID_19_Peru_Raw)
